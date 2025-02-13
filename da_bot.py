@@ -10,8 +10,15 @@ import requests
 import cloudinary
 import cloudinary.uploader
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply, Bot
-from telegram.ext import (Updater, CommandHandler, MessageHandler, Filters,
-                          CallbackQueryHandler, ConversationHandler, CallbackContext)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    CallbackQueryHandler,
+    ConversationHandler,
+    CallbackContext
+)
 import db
 import config
 import notifier  # For sending notifications to supervisors
@@ -581,36 +588,34 @@ def default_handler_da_edit(update: Update, context: CallbackContext):
 # Main function
 # =============================================================================
 def main():
-    updater = Updater(config.DA_BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
+    application = Application.builder().token(config.DA_BOT_TOKEN).build()
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
-            SUBSCRIPTION_PHONE: [MessageHandler(Filters.text & ~Filters.command, subscription_phone)],
+            SUBSCRIPTION_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, subscription_phone)],
             MAIN_MENU: [
                 CallbackQueryHandler(da_main_menu_callback,
-                                     pattern="^(menu_add_issue|menu_query_issue|issue_reason_.*|issue_type_.*|attach_.*|edit_ticket_.*|edit_field_.*|da_moreinfo\\|.*)"),
-                MessageHandler(Filters.text & ~Filters.command, default_handler_da)
+                                pattern="^(menu_add_issue|menu_query_issue|issue_reason_.*|issue_type_.*|attach_.*|edit_ticket_.*|edit_field_.*|da_moreinfo\\|.*)"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, default_handler_da)
             ],
             NEW_ISSUE_ORDER: [CallbackQueryHandler(da_main_menu_callback, pattern="^select_order\\|.*")],
-            NEW_ISSUE_DESCRIPTION: [MessageHandler(Filters.text & ~Filters.command, new_issue_description)],
+            NEW_ISSUE_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, new_issue_description)],
             NEW_ISSUE_REASON: [CallbackQueryHandler(da_main_menu_callback, pattern="^issue_reason_.*")],
             NEW_ISSUE_TYPE: [CallbackQueryHandler(da_main_menu_callback, pattern="^issue_type_.*")],
             ASK_IMAGE: [CallbackQueryHandler(da_main_menu_callback, pattern="^(attach_yes|attach_no)$")],
-            WAIT_IMAGE: [MessageHandler(Filters.photo, wait_image)],
+            WAIT_IMAGE: [MessageHandler(filters.PHOTO, wait_image)],
             EDIT_PROMPT: [CallbackQueryHandler(edit_ticket_prompt_callback, pattern="^(edit_ticket_yes|edit_ticket_no)$")],
             EDIT_FIELD: [
                 CallbackQueryHandler(edit_field_callback, pattern="^edit_field_.*"),
-                MessageHandler(Filters.text & ~Filters.command, edit_field_input_handler)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_field_input_handler)
             ],
-            MORE_INFO_PROMPT: [MessageHandler(Filters.text & ~Filters.command, da_awaiting_response_handler)]
+            MORE_INFO_PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, da_awaiting_response_handler)]
         },
         fallbacks=[CommandHandler('cancel', lambda u, c: u.message.reply_text("تم إلغاء العملية."))]
     )
-    dp.add_handler(conv_handler)
-    dp.add_handler(CallbackQueryHandler(da_callback_handler, pattern="^(close\\||da_moreinfo\\|).*"))
-    updater.start_polling()
-    updater.idle()
+    application.add_handler(conv_handler)
+    application.add_handler(CallbackQueryHandler(da_callback_handler, pattern="^(close\\||da_moreinfo\\|).*"))
+    application.run_polling()
 
 if __name__ == '__main__':
     main()

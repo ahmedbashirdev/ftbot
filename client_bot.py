@@ -2,7 +2,15 @@
 # client_bot.py
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply, Bot
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler, ConversationHandler, CallbackContext
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    CallbackQueryHandler,
+    ConversationHandler,
+    CallbackContext
+)
 import db
 import config
 
@@ -214,22 +222,20 @@ def default_handler_client(update: Update, context: CallbackContext):
     return MAIN_MENU
 
 def main():
-    updater = Updater(config.CLIENT_BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
+    application = Application.builder().token(config.CLIENT_BOT_TOKEN).build()
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
-            SUBSCRIPTION_PHONE: [MessageHandler(Filters.text & ~Filters.command, subscription_phone)],
-            SUBSCRIPTION_CLIENT: [MessageHandler(Filters.text & ~Filters.command, subscription_client)],
+            SUBSCRIPTION_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, subscription_phone)],
+            SUBSCRIPTION_CLIENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, subscription_client)],
             MAIN_MENU: [CallbackQueryHandler(client_main_menu_callback, pattern="^(menu_show_tickets|notify_pref\\|.*|solve\\|.*|ignore\\|.*)")],
-            AWAITING_RESPONSE: [MessageHandler(Filters.text & ~Filters.command, client_awaiting_response_handler)]
+            AWAITING_RESPONSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, client_awaiting_response_handler)]
         },
         fallbacks=[CommandHandler('cancel', lambda u, c: u.message.reply_text("تم إلغاء العملية."))]
     )
-    dp.add_handler(conv_handler)
-    dp.add_handler(MessageHandler(Filters.text, default_handler_client))
-    updater.start_polling()
-    updater.idle()
+    application.add_handler(conv_handler)
+    application.add_handler(MessageHandler(filters.TEXT, default_handler_client))
+    application.run_polling()
 
 if __name__ == '__main__':
     main()

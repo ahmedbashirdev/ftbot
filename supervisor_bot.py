@@ -3,7 +3,15 @@
 import logging
 import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply, Bot
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler, ConversationHandler, CallbackContext
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    CallbackQueryHandler,
+    ConversationHandler,
+    CallbackContext
+)
 import db
 import config
 
@@ -283,23 +291,21 @@ def default_handler_supervisor(update: Update, context: CallbackContext):
     return MAIN_MENU
 
 def main():
-    updater = Updater(config.SUPERVISOR_BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
+    application = Application.builder().token(config.SUPERVISOR_BOT_TOKEN).build()
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
-            SUBSCRIPTION_PHONE: [MessageHandler(Filters.text & ~Filters.command, subscription_phone)],
+            SUBSCRIPTION_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, subscription_phone)],
             MAIN_MENU: [CallbackQueryHandler(supervisor_main_menu_callback,
-                                             pattern="^(menu_show_all|menu_query_issue|view\\|.*|solve\\|.*|moreinfo\\|.*|sendclient\\|.*|sendto_da\\|.*|confirm_sendclient\\|.*|cancel_sendclient\\|.*|confirm_sendto_da\\|.*|cancel_sendto_da\\|.*)")],
-            SEARCH_TICKETS: [MessageHandler(Filters.text & ~Filters.command, search_tickets)],
-            AWAITING_RESPONSE: [MessageHandler(Filters.text & ~Filters.command, awaiting_response_handler)]
+                                        pattern="^(menu_show_all|menu_query_issue|view\\|.*|solve\\|.*|moreinfo\\|.*|sendclient\\|.*|sendto_da\\|.*|confirm_sendclient\\|.*|cancel_sendclient\\|.*|confirm_sendto_da\\|.*|cancel_sendto_da\\|.*)")],
+            SEARCH_TICKETS: [MessageHandler(filters.TEXT & ~filters.COMMAND, search_tickets)],
+            AWAITING_RESPONSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, awaiting_response_handler)]
         },
         fallbacks=[CommandHandler('cancel', lambda u, c: u.message.reply_text("تم إلغاء العملية."))]
     )
-    dp.add_handler(conv_handler)
-    dp.add_handler(MessageHandler(Filters.text, default_handler_supervisor))
-    updater.start_polling()
-    updater.idle()
+    application.add_handler(conv_handler)
+    application.add_handler(MessageHandler(filters.TEXT, default_handler_supervisor))
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
