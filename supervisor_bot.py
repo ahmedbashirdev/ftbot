@@ -290,45 +290,21 @@ def default_handler_supervisor(update: Update, context: CallbackContext) -> int:
     return MAIN_MENU
 
 def main():
-    """Start the DA bot."""
-    # Create the Updater and pass it your bot's token
-    updater = Updater(config.DA_BOT_TOKEN, use_context=True)
-
-    # Get the dispatcher to register handlers
+    updater = Updater(config.SUPERVISOR_BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
-
-    # Add conversation handler with states
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
             SUBSCRIPTION_PHONE: [MessageHandler(Filters.text & ~Filters.command, subscription_phone)],
-            MAIN_MENU: [
-                CallbackQueryHandler(da_main_menu_callback,
-                            pattern="^(menu_add_issue|menu_query_issue|issue_reason_.*|issue_type_.*|attach_.*|edit_ticket_.*|edit_field_.*|da_moreinfo\\|.*)$"),
-                MessageHandler(Filters.text & ~Filters.command, default_handler_da)
-            ],
-            NEW_ISSUE_ORDER: [CallbackQueryHandler(da_main_menu_callback, pattern="^select_order\\|.*")],
-            NEW_ISSUE_DESCRIPTION: [MessageHandler(Filters.text & ~Filters.command, new_issue_description)],
-            NEW_ISSUE_REASON: [CallbackQueryHandler(da_main_menu_callback, pattern="^issue_reason_.*")],
-            NEW_ISSUE_TYPE: [CallbackQueryHandler(da_main_menu_callback, pattern="^issue_type_.*")],
-            ASK_IMAGE: [CallbackQueryHandler(da_main_menu_callback, pattern="^(attach_yes|attach_no)$")],
-            WAIT_IMAGE: [MessageHandler(Filters.photo, wait_image)],
-            EDIT_PROMPT: [CallbackQueryHandler(edit_ticket_prompt_callback, pattern="^(edit_ticket_yes|edit_ticket_no)$")],
-            EDIT_FIELD: [
-                CallbackQueryHandler(edit_field_callback, pattern="^edit_field_.*"),
-                MessageHandler(Filters.text & ~Filters.command, edit_field_input_handler)
-            ],
-            MORE_INFO_PROMPT: [MessageHandler(Filters.text & ~Filters.command, da_awaiting_response_handler)]
+            MAIN_MENU: [CallbackQueryHandler(supervisor_main_menu_callback,  # Changed from da_main_menu_callback
+                                             pattern="^(menu_show_all|menu_query_issue|view\\|.*|solve\\|.*|moreinfo\\|.*|sendclient\\|.*|sendto_da\\|.*|confirm_sendclient\\|.*|cancel_sendclient\\|.*|confirm_sendto_da\\|.*|cancel_sendto_da\\|.*)")],
+            SEARCH_TICKETS: [MessageHandler(Filters.text & ~Filters.command, search_tickets)],
+            AWAITING_RESPONSE: [MessageHandler(Filters.text & ~Filters.command, awaiting_response_handler)]
         },
-        fallbacks=[CommandHandler('cancel', 
-            lambda update, context: update.message.reply_text("تم إلغاء العملية."))],per_message=True
+        fallbacks=[CommandHandler('cancel', lambda u, c: u.message.reply_text("  ."))]
     )
-
-    # Add handlers
     dp.add_handler(conv_handler)
-    dp.add_handler(CallbackQueryHandler(da_callback_handler, pattern="^(close\\||da_moreinfo\\|).*"))
-
-    # Start the Bot
+    dp.add_handler(MessageHandler(Filters.text, default_handler_supervisor))
     updater.start_polling()
     updater.idle()
 
