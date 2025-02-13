@@ -1,11 +1,8 @@
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import QueuePool
 from contextlib import contextmanager
-from datetime import datetime
-import json
 from config import DATABASE_URL
 
-# Create SQLAlchemy engine with connection pooling
 engine = create_engine(
     DATABASE_URL,
     poolclass=QueuePool,
@@ -68,7 +65,8 @@ def get_subscription(user_id, bot):
             text("SELECT * FROM subscriptions WHERE user_id = :user_id AND bot = :bot"),
             {"user_id": user_id, "bot": bot}
         ).fetchone()
-        return dict(result) if result else None
+        return result if result else None
+
 
 def add_subscription(user_id, phone, role, bot, client, username, first_name, last_name, chat_id):
     with get_connection() as conn:

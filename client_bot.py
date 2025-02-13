@@ -3,10 +3,10 @@
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply, Bot
 from telegram.ext import (
-    Application,
+    Updater,
     CommandHandler,
     MessageHandler,
-    filters,
+    Filters,
     CallbackQueryHandler,
     ConversationHandler,
     CallbackContext
@@ -31,7 +31,7 @@ def safe_edit_message(query, text, reply_markup=None, parse_mode="HTML"):
     else:
         return query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
 
-def start(update: Update, context: CallbackContext):
+def start(update: Update, context: CallbackContext) -> int:
     user = update.effective_user
     sub = db.get_subscription(user.id, "Client")
     if not sub:
@@ -46,27 +46,27 @@ def start(update: Update, context: CallbackContext):
         update.message.reply_text(f"مرحباً {user.first_name}", reply_markup=reply_markup)
         return MAIN_MENU
 
-def subscription_phone(update: Update, context: CallbackContext):
+def subscription_phone(update: Update, context: CallbackContext) -> int:
     phone = update.message.text.strip()
     user = update.effective_user
     db.add_subscription(user.id, phone, 'Client', "Client", None,
-                        user.username, user.first_name, user.last_name, update.effective_chat.id)
+                    user.username, user.first_name, user.last_name, update.effective_chat.id)
     update.message.reply_text("تم استقبال رقم الهاتف. الآن، يرجى إدخال اسم العميل الذي تمثله (مثال: بيبس):")
     return SUBSCRIPTION_CLIENT
 
-def subscription_client(update: Update, context: CallbackContext):
+def subscription_client(update: Update, context: CallbackContext) -> int:
     client_name = update.message.text.strip()
     user = update.effective_user
     sub = db.get_subscription(user.id, 'Client')
     phone = sub['phone'] if sub and sub['phone'] != "unknown" else "unknown"
     db.add_subscription(user.id, phone, 'Client', "Client", client_name,
-                        user.username, user.first_name, user.last_name, update.effective_chat.id)
+                    user.username, user.first_name, user.last_name, update.effective_chat.id)
     keyboard = [[InlineKeyboardButton("عرض المشاكل", callback_data="menu_show_tickets")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text("تم الاشتراك بنجاح كـ Client!", reply_markup=reply_markup)
     return MAIN_MENU
 
-def client_main_menu_callback(update: Update, context: CallbackContext):
+def client_main_menu_callback(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     query.answer()
     data = query.data
@@ -161,9 +161,9 @@ def send_full_issue_details_to_client(query, ticket_id):
         [InlineKeyboardButton("حل المشكلة", callback_data=f"solve|{ticket_id}")],
         [InlineKeyboardButton("تجاهل", callback_data=f"ignore|{ticket_id}")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
     if ticket['image_url']:
         query.bot.send_photo(chat_id=query.message.chat_id, photo=ticket['image_url'])
+    safe_edit_message(query, text=text, reply_markup=reply_markup, parse_mode="HTML")
     safe_edit_message(query, text=text, reply_markup=reply_markup, parse_mode="HTML")
 
 def reminder_callback(context: CallbackContext):
@@ -173,7 +173,7 @@ def reminder_callback(context: CallbackContext):
     text = f"تذكير: لم تقم بالرد على التذكرة #{ticket_id} بعد."
     context.bot.send_message(chat_id=chat_id, text=text)
 
-def client_awaiting_response_handler(update: Update, context: CallbackContext):
+def client_awaiting_response_handler(update: Update, context: CallbackContext) -> int:
     solution = update.message.text.strip()
     ticket_id = context.user_data.get('ticket_id')
     ticket = db.get_ticket(ticket_id)
@@ -215,27 +215,55 @@ def notify_supervisors_client_response(ticket_id, solution=None, ignored=False):
         except Exception as e:
             logger.error(f"Error notifying supervisor {sup['chat_id']}: {e}")
 
-def default_handler_client(update: Update, context: CallbackContext):
+def default_handler_client(update: Update, context: CallbackContext) -> int:
     keyboard = [[InlineKeyboardButton("عرض المشاكل", callback_data="menu_show_tickets")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text("الرجاء اختيار خيار:", reply_markup=reply_markup)
     return MAIN_MENU
 
 def main():
-    application = Application.builder().token(config.CLIENT_BOT_TOKEN).build()
+    """Start the DA bot."""
+    # Create the Updater and pass it your bot's token
+    updater = Updater(config.DA_BOT_TOKEN, use_context=True)
+
+    # Get the dispatcher to register handlers
+    dp = updater.dispatcher
+
+    # Add conversation handler with states
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
-            SUBSCRIPTION_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, subscription_phone)],
-            SUBSCRIPTION_CLIENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, subscription_client)],
-            MAIN_MENU: [CallbackQueryHandler(client_main_menu_callback, pattern="^(menu_show_tickets|notify_pref\\|.*|solve\\|.*|ignore\\|.*)")],
-            AWAITING_RESPONSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, client_awaiting_response_handler)]
+            SUBSCRIPTION_PHONE: [MessageHandler(Filters.text & ~Filters.command, subscription_phone)],
+            MAIN_MENU: [
+                CallbackQueryHandler(da_main_menu_callback,
+                            pattern="^(menu_add_issue|menu_query_issue|issue_reason_.*|issue_type_.*|attach_.*|edit_ticket_.*|edit_field_.*|da_moreinfo\\|.*)$"),
+                MessageHandler(Filters.text & ~Filters.command, default_handler_da)
+            ],
+            NEW_ISSUE_ORDER: [CallbackQueryHandler(da_main_menu_callback, pattern="^select_order\\|.*")],
+            NEW_ISSUE_DESCRIPTION: [MessageHandler(Filters.text & ~Filters.command, new_issue_description)],
+            NEW_ISSUE_REASON: [CallbackQueryHandler(da_main_menu_callback, pattern="^issue_reason_.*")],
+            NEW_ISSUE_TYPE: [CallbackQueryHandler(da_main_menu_callback, pattern="^issue_type_.*")],
+            ASK_IMAGE: [CallbackQueryHandler(da_main_menu_callback, pattern="^(attach_yes|attach_no)$")],
+            WAIT_IMAGE: [MessageHandler(Filters.photo, wait_image)],
+            EDIT_PROMPT: [CallbackQueryHandler(edit_ticket_prompt_callback, pattern="^(edit_ticket_yes|edit_ticket_no)$")],
+            EDIT_FIELD: [
+                CallbackQueryHandler(edit_field_callback, pattern="^edit_field_.*"),
+                MessageHandler(Filters.text & ~Filters.command, edit_field_input_handler)
+            ],
+            MORE_INFO_PROMPT: [MessageHandler(Filters.text & ~Filters.command, da_awaiting_response_handler)]
         },
-        fallbacks=[CommandHandler('cancel', lambda u, c: u.message.reply_text("تم إلغاء العملية."))]
+        fallbacks=[CommandHandler('cancel', 
+            lambda update, context: update.message.reply_text("تم إلغاء العملية."))],per_message=True
     )
-    application.add_handler(conv_handler)
-    application.add_handler(MessageHandler(filters.TEXT, default_handler_client))
-    application.run_polling()
+
+    # Add handlers
+    dp.add_handler(conv_handler)
+    dp.add_handler(CallbackQueryHandler(da_callback_handler, pattern="^(close\\||da_moreinfo\\|).*"))
+
+    # Start the Bot
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == '__main__':
     main()
+
