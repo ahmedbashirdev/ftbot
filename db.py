@@ -65,9 +65,36 @@ def get_subscription(user_id, bot):
             text("SELECT * FROM subscriptions WHERE user_id = :user_id AND bot = :bot"),
             {"user_id": user_id, "bot": bot}
         ).fetchone()
-        return result if result else None
+    if not result:
+        return None
 
+    # ✅ Convert SQLAlchemy Row object to dictionary
+    return dict(result._mapping)  
 
+def add_ticket(order_id, description, issue_reason, issue_type, client, image_url, status, user_id):
+    """Insert a new ticket into the database."""
+    session = get_db_session()  # Ensure session is managed correctly
+    try:
+        new_ticket = Ticket(
+            order_id=order_id,
+            description=description,
+            issue_reason=issue_reason,
+            issue_type=issue_type,
+            client=client,
+            image_url=image_url,
+            status=status,
+            user_id=user_id
+        )
+        session.add(new_ticket)
+        session.commit()
+        return new_ticket.ticket_id  # Return the ID of the new ticket
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error adding ticket: {e}")
+        return None
+    finally:
+        session.close()
+        
 def add_subscription(user_id, phone, role, bot, client, username, first_name, last_name, chat_id):
     with get_connection() as conn:
         conn.execute(

@@ -4,6 +4,7 @@
 import logging
 import datetime
 import unicodedata
+import time
 import urllib.parse
 from io import BytesIO
 import requests
@@ -41,6 +42,7 @@ logger = logging.getLogger(__name__)
 # Now the order (and its associated client) is selected automatically
 # via the API and shown in state NEW_ISSUE_ORDER.
 # =============================================================================
+# Conversation states
 (SUBSCRIPTION_PHONE, MAIN_MENU, NEW_ISSUE_ORDER, NEW_ISSUE_DESCRIPTION,
  NEW_ISSUE_REASON, NEW_ISSUE_TYPE, ASK_IMAGE, WAIT_IMAGE,
  AWAITING_DA_RESPONSE, EDIT_PROMPT, EDIT_FIELD, MORE_INFO_PROMPT) = range(12)
@@ -138,32 +140,80 @@ def subscription_phone(update: Update, context: CallbackContext) -> int:
 def fetch_orders(query, context):
     user = query.from_user
     sub = db.get_subscription(user.id, "DA")
-    if not sub or not sub['phone']:
-        safe_edit_message(query, text="لم يتم العثور على بيانات الاشتراك أو رقم الهاتف.")
+
+    # ✅ Debug: Log the subscription data
+    logger.debug(f"fetch_orders() - Subscription data: {sub}")
+
+    if not sub:
+        safe_edit_message(query, text="❌ لم يتم العثور على بيانات الاشتراك.")
         return MAIN_MENU
-    agent_phone = sub['phone']
+
+    if not isinstance(sub, dict):
+        logger.error(f"fetch_orders() - Expected dictionary but got {type(sub)}")
+        safe_edit_message(query, text="❌ بيانات الاشتراك غير صحيحة.")
+        return MAIN_MENU
+
+    if "phone" not in sub:
+        logger.error(f"fetch_orders() - Subscription missing 'phone' key: {sub}")
+        safe_edit_message(query, text="❌ لم يتم العثور على رقم الهاتف في بيانات الاشتراك.")
+        return MAIN_MENU
+
+    agent_phone = sub["phone"]
     today = datetime.datetime.now().strftime("%Y-%m-%d")
-    url = f"https://3e5440qr0c.execute-api.eu-west-3.amazonaws.com/dev/locus_info?agent_phone={agent_phone}&order_date='2025-02-10'"
+
+    url = f"https://3e5440qr0c.execute-api.eu-west-3.amazonaws.com/dev/locus_info?agent_phone={agent_phone}&order_date=2025-02-10"
+
     try:
         response = requests.get(url)
         response.raise_for_status()
+
+        # ✅ Debug: Log the raw API response
+        logger.debug(f"fetch_orders() - Raw API response: {response.text}")
+
         orders_data = response.json()
-        orders = orders_data.get("data", [])
-        if not orders:
-            safe_edit_message(query, text="لا توجد طلبات اليوم.")
+
+        if not isinstance(orders_data, dict):
+            logger.error(f"fetch_orders() - Expected dict, got {type(orders_data)}")
+            safe_edit_message(query, text="❌ بيانات الطلب غير صحيحة.")
             return MAIN_MENU
+
+        orders = orders_data.get("data", [])
+        if not isinstance(orders, list):
+            logger.error(f"fetch_orders() - Expected list, got {type(orders)}")
+            safe_edit_message(query, text="❌ بيانات الطلب غير صحيحة.")
+            return MAIN_MENU
+
+        if not orders:
+            safe_edit_message(query, text="❌ لا توجد طلبات اليوم.")
+            return MAIN_MENU
+
         keyboard = []
-        for order in orders:
-            order_id = order.get("order_id")
-            client_name = order.get("client_name")
-            callback_data = f"select_order|{order_id}|{client_name}"
-            button_text = f"طلب {order_id} - {client_name}"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+        for o in orders:
+            if not isinstance(o, dict):
+                logger.error(f"fetch_orders() - Invalid order format: {o}")
+                continue
+
+            order_id = o.get("order_id", "N/A")
+            client_name = o.get("client_name", "غير معروف")
+
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"طلب {order_id} - {client_name}",
+                    callback_data=f"select_order|{urllib.parse.quote(str(order_id))}|{urllib.parse.quote(str(client_name))}"
+                )
+            ])
+
+        if not keyboard:
+            safe_edit_message(query, text="❌ لم يتم العثور على طلبات صالحة.")
+            return MAIN_MENU
+
         reply_markup = InlineKeyboardMarkup(keyboard)
-        safe_edit_message(query, text="اختر الطلب الذي تريد رفع مشكلة عنه:", reply_markup=reply_markup)
+        safe_edit_message(query, text="📌 اختر الطلب الذي تريد رفع مشكلة عنه:", reply_markup=reply_markup)
         return NEW_ISSUE_ORDER
-    except Exception as e:
-        safe_edit_message(query, text=f"حدث خطأ أثناء جلب الطلبات: {e}")
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"fetch_orders() - API request error: {e}")
+        safe_edit_message(query, text=f"❌ حدث خطأ أثناء جلب الطلبات: {e}")
         return MAIN_MENU
 def send_full_issue_details_to_client(query, ticket_id):
     """Send complete issue details to the client."""
@@ -212,7 +262,8 @@ def da_main_menu_callback(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     query.answer()
     data = query.data
-    logger.debug("da_main_menu_callback: Received data: %s", data)
+    logger.debug(f"da_main_menu_callback: Received callback data: {data}")  # ✅ Debug log
+    logger.debug(f"Raw callback query: {query}")  # ✅ Debug log
     
     if data == "menu_add_issue":
         # Start the fetch_orders flow when adding a new issue
@@ -318,6 +369,7 @@ def new_issue_description(update: Update, context: CallbackContext) -> int:
     update.message.reply_text("اختر سبب المشكلة:", reply_markup=reply_markup)
     return NEW_ISSUE_REASON
 
+
 def wait_image(update: Update, context: CallbackContext) -> int:
     if update.message.photo:
         try:
@@ -326,22 +378,30 @@ def wait_image(update: Update, context: CallbackContext) -> int:
             bio = BytesIO()
             file.download(out=bio)
             bio.seek(0)
-            result = cloudinary.uploader.upload(bio)
-            secure_url = result.get('secure_url')
-            if secure_url:
-                context.user_data['image'] = secure_url
-                return show_ticket_summary_for_edit(update.message, context)
-            else:
-                update.message.reply_text("فشل رفع الصورة. حاول مرة أخرى:")
-                return WAIT_IMAGE
+
+            # ✅ Add Retry for Cloudinary Upload
+            retry_count = 3
+            for attempt in range(retry_count):
+                try:
+                    result = cloudinary.uploader.upload(bio)
+                    secure_url = result.get('secure_url')
+                    if secure_url:
+                        context.user_data['image'] = secure_url
+                        return show_ticket_summary_for_edit(update.message, context)
+                except Exception as e:
+                    logger.error(f"Cloudinary upload failed (Attempt {attempt + 1}/{retry_count}): {e}")
+                    time.sleep(2)  # Wait before retrying
+
+            update.message.reply_text("⚠️ فشل رفع الصورة بعد عدة محاولات. حاول مرة أخرى.")
+            return WAIT_IMAGE
         except Exception as e:
             logger.error(f"Error uploading image: {e}")
-            update.message.reply_text("حدث خطأ أثناء رفع الصورة. حاول مرة أخرى:")
+            update.message.reply_text("⚠️ حدث خطأ أثناء رفع الصورة. حاول مرة أخرى.")
             return WAIT_IMAGE
     else:
-        update.message.reply_text("لم يتم إرسال صورة صحيحة. أعد الإرسال:")
+        update.message.reply_text("⚠️ لم يتم إرسال صورة صحيحة. أعد الإرسال:")
         return WAIT_IMAGE
-
+    
 def show_ticket_summary_for_edit(source, context: CallbackContext):
     if hasattr(source, 'edit_message_text'):
         msg_func = source.edit_message_text
@@ -666,17 +726,12 @@ def main():
         return
         
     try:
-        # Create the Updater and pass it your bot's token
         updater = Updater(config.DA_BOT_TOKEN, use_context=True)
         logger.info("Bot connected successfully")
-        
-        # Get the dispatcher to register handlers
         dp = updater.dispatcher
-
-        # Add test command handler
         dp.add_handler(CommandHandler('test', test_command))
         
-        # Add conversation handler
+        # Complete conversation handler with all states
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('start', start)],
             states={
@@ -684,7 +739,7 @@ def main():
                     MessageHandler(Filters.text & ~Filters.command, subscription_phone)
                 ],
                 MAIN_MENU: [
-                    CallbackQueryHandler(da_main_menu_callback, pattern='^menu_'),
+                    CallbackQueryHandler(da_main_menu_callback, pattern='^(menu_|select_order|issue_reason_|issue_type_|attach_|da_moreinfo|edit_ticket_|edit_field_)'),
                     MessageHandler(Filters.text & ~Filters.command, default_handler_da)
                 ],
                 NEW_ISSUE_ORDER: [
@@ -693,7 +748,33 @@ def main():
                 NEW_ISSUE_DESCRIPTION: [
                     MessageHandler(Filters.text & ~Filters.command, new_issue_description)
                 ],
-                # ... rest of your states ...
+                NEW_ISSUE_REASON: [
+                    CallbackQueryHandler(da_main_menu_callback, pattern='^issue_reason_')
+                ],
+                NEW_ISSUE_TYPE: [
+                    CallbackQueryHandler(da_main_menu_callback, pattern='^issue_type_')
+                ],
+                ASK_IMAGE: [
+                    CallbackQueryHandler(da_main_menu_callback, pattern='^attach_')
+                ],
+                WAIT_IMAGE: [
+                    MessageHandler(Filters.photo, wait_image),
+                    MessageHandler(Filters.text & ~Filters.command, lambda u, c: u.message.reply_text("يرجى إرسال صورة."))
+                ],
+                EDIT_PROMPT: [
+                    CallbackQueryHandler(edit_ticket_prompt_callback, pattern='^edit_ticket_')
+                ],
+                EDIT_FIELD: [
+                    CallbackQueryHandler(edit_field_callback, pattern='^edit_field_'),
+                    MessageHandler(Filters.text & ~Filters.command, edit_field_input_handler),
+                    MessageHandler(~Filters.text & ~Filters.command, default_handler_da_edit)
+                ],
+                MORE_INFO_PROMPT: [
+                    MessageHandler(Filters.text & ~Filters.command, da_awaiting_response_handler)
+                ],
+                AWAITING_DA_RESPONSE: [
+                    MessageHandler(Filters.text & ~Filters.command, da_awaiting_response_handler)
+                ]
             },
             fallbacks=[
                 CommandHandler('cancel', lambda update, context: (
@@ -705,13 +786,9 @@ def main():
             allow_reentry=True
         )
 
-        # Add handlers
         dp.add_handler(conv_handler)
-        
-        # Add error handler
         dp.add_error_handler(error_handler)
 
-        # Start the Bot
         logger.info("Starting polling...")
         updater.start_polling()
         updater.idle()
@@ -719,6 +796,7 @@ def main():
     except Exception as e:
         logger.error(f"Failed to start bot: {e}")
         return
+
 def test_command(update: Update, context: CallbackContext):
     update.message.reply_text("Bot is working! Try /start")
 

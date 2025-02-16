@@ -70,67 +70,111 @@ def client_main_menu_callback(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     query.answer()
     data = query.data
-    if data == "menu_show_tickets":
-        sub = db.get_subscription(query.from_user.id, "Client")
-        client_name = sub['client']
-        tickets = [t for t in db.get_all_open_tickets() if t['status'] == "Awaiting Client Response" and t['client'] == client_name]
+    logger.debug("client_main_menu_callback: Received data: %s", data)
+
+    if data == "menu_query_issue":
+        # Get user's tickets
+        user = query.from_user
+        tickets = db.get_tickets_by_client(user.id)
+        
+        status_mapping = {
+            "Opened": "مفتوحة",
+            "Pending DA Action": "في انتظار إجراء الوكيل",
+            "Awaiting Client Response": "في انتظار رد العميل",
+            "Client Responded": "تم رد العميل",
+            "Client Ignored": "تم تجاهل العميل",
+            "Closed": "مغلقة",
+            "Additional Info Provided": "تم توفير معلومات إضافية",
+            "Pending DA Response": "في انتظار رد الوكيل"
+        }
+        
         if tickets:
             for ticket in tickets:
+                status_ar = status_mapping.get(ticket['status'], ticket['status'])
                 text = (f"<b>تذكرة #{ticket['ticket_id']}</b>\n"
-                        f"<b>رقم الطلب:</b> {ticket['order_id']}\n"
-                        f"<b>الوصف:</b> {ticket['issue_description']}\n"
-                        f"<b>الحالة:</b> {ticket['status']}")
-                keyboard = [
-                    [InlineKeyboardButton("حالياً", callback_data=f"notify_pref|{ticket['ticket_id']}|now")],
-                    [InlineKeyboardButton("خلال 15 دقيقة", callback_data=f"notify_pref|{ticket['ticket_id']}|15")],
-                    [InlineKeyboardButton("خلال 10 دقائق", callback_data=f"notify_pref|{ticket['ticket_id']}|10")],
-                    [InlineKeyboardButton("حل المشكلة", callback_data=f"solve|{ticket['ticket_id']}")],
-                    [InlineKeyboardButton("تجاهل", callback_data=f"ignore|{ticket['ticket_id']}")]
-                ]
+                       f"رقم الطلب: {ticket['order_id']}\n"
+                       f"الوصف: {ticket['issue_description']}\n"
+                       f"سبب المشكلة: {ticket['issue_reason']}\n"
+                       f"نوع المشكلة: {ticket['issue_type']}\n"
+                       f"الحالة: {status_ar}")
+                
+                keyboard = [[InlineKeyboardButton("عرض التفاصيل", callback_data=f"view|{ticket['ticket_id']}")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
+                
                 if ticket['image_url']:
-                    query.message.reply_photo(photo=ticket['image_url'])
-                safe_edit_message(query, text=text, reply_markup=reply_markup, parse_mode="HTML")
+                    query.message.reply_photo(photo=ticket['image_url'],
+                                           caption=text,
+                                           reply_markup=reply_markup,
+                                           parse_mode="HTML")
+                else:
+                    query.message.reply_text(text=text,
+                                          reply_markup=reply_markup,
+                                          parse_mode="HTML")
         else:
-            safe_edit_message(query, text="لا توجد تذاكر في انتظار ردك.")
+            safe_edit_message(query, text="لا توجد تذاكر.")
         return MAIN_MENU
+
+    elif data.startswith("view|"):
+        ticket_id = int(data.split("|")[1])
+        ticket = db.get_ticket(ticket_id)
+        if ticket:
+            try:
+                logs = ""
+                if ticket["logs"]:
+                    logs_list = json.loads(ticket["logs"])
+                    logs = "\n".join([f"{entry.get('timestamp', '')}: {entry.get('action', '')} - {entry.get('message', '')}"
+                                    for entry in logs_list])
+            except Exception:
+                logs = "لا توجد سجلات إضافية."
+                
+            text = (f"<b>تفاصيل التذكرة #{ticket['ticket_id']}</b>\n"
+                   f"رقم الطلب: {ticket['order_id']}\n"
+                   f"الوصف: {ticket['issue_description']}\n"
+                   f"سبب المشكلة: {ticket['issue_reason']}\n"
+                   f"نوع المشكلة: {ticket['issue_type']}\n"
+                   f"الحالة: {ticket['status']}\n\n"
+                   f"السجلات:\n{logs}")
+            
+            keyboard = []
+            if ticket['status'] == "Awaiting Client Response":
+                keyboard.append([InlineKeyboardButton("إضافة حل", callback_data=f"add_solution|{ticket_id}")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+            safe_edit_message(query, text=text, reply_markup=reply_markup, parse_mode="HTML")
+        else:
+            safe_edit_message(query, text="التذكرة غير موجودة.")
+        return MAIN_MENU
+
+    elif data.startswith("add_solution|"):
+        ticket_id = int(data.split("|")[1])
+        context.user_data['ticket_id'] = ticket_id
+        context.user_data['action'] = 'add_solution'
+        safe_edit_message(query, text="يرجى إدخال الحل:", reply_markup=ForceReply(selective=True))
+        return AWAITING_RESPONSE
+
     elif data.startswith("notify_pref|"):
         parts = data.split("|")
+        if len(parts) != 3:
+            safe_edit_message(query, text="خطأ في البيانات.")
+            return MAIN_MENU
+            
         ticket_id = int(parts[1])
         pref = parts[2]
+        
         if pref == "now":
             send_full_issue_details_to_client(query, ticket_id)
         else:
-            delay = 900 if pref == "15" else 600
-            context.job_queue.run_once(reminder_callback, delay,
-                                       context={'chat_id': query.message.chat_id, 'ticket_id': ticket_id})
-            send_issue_details_to_client(query, ticket_id)
+            delay = 900 if pref == "15" else 600  # 15 minutes = 900 seconds, 10 minutes = 600 seconds
+            context.job_queue.run_once(
+                reminder_callback,
+                delay,
+                context={'chat_id': query.message.chat_id, 'ticket_id': ticket_id}
+            )
+            safe_edit_message(query, text=f"سيتم تذكيرك بعد {15 if pref == '15' else 10} دقيقة.")
         return MAIN_MENU
-    elif data.startswith("solve|"):
-        ticket_id = int(data.split("|")[1])
-        ticket = db.get_ticket(ticket_id)
-        if ticket['status'] in ("Client Responded", "Client Ignored", "Closed"):
-            safe_edit_message(query, text="التذكرة مغلقة أو تمت معالجتها بالفعل ولا يمكن تعديلها.")
-            return MAIN_MENU
-        context.user_data['ticket_id'] = ticket_id
-        context.user_data['awaiting_response'] = True
-        context.bot.send_message(chat_id=query.message.chat_id,
-                                 text="أدخل الحل للمشكلة:",
-                                 reply_markup=ForceReply(selective=True))
-        return AWAITING_RESPONSE
-    elif data.startswith("ignore|"):
-        ticket_id = int(data.split("|")[1])
-        ticket = db.get_ticket(ticket_id)
-        if ticket['status'] in ("Client Responded", "Client Ignored", "Closed"):
-            safe_edit_message(query, text="التذكرة مغلقة أو تمت معالجتها بالفعل ولا يمكن تعديلها.")
-            return MAIN_MENU
-        db.update_ticket_status(ticket_id, "Client Ignored", {"action": "client_ignored"})
-        db.update_ticket_status(ticket_id, "Client Responded", {"action": "client_final_response", "message": "ignored"})
-        notify_supervisors_client_response(ticket_id, ignored=True)
-        safe_edit_message(query, text="تم إرسال ردك (تم تجاهل التذكرة).")
-        return MAIN_MENU
+
     else:
-        safe_edit_message(query, text="الإجراء غير معروف.")
+        safe_edit_message(query, text="خيار غير معروف.")
         return MAIN_MENU
 
 def send_issue_details_to_client(query, ticket_id):
@@ -222,45 +266,23 @@ def default_handler_client(update: Update, context: CallbackContext) -> int:
     return MAIN_MENU
 
 def main():
-    """Start the DA bot."""
-    # Create the Updater and pass it your bot's token
-    updater = Updater(config.DA_BOT_TOKEN, use_context=True)
-
-    # Get the dispatcher to register handlers
+    updater = Updater(config.CLIENT_BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
-
-    # Add conversation handler with states
+    
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
             SUBSCRIPTION_PHONE: [MessageHandler(Filters.text & ~Filters.command, subscription_phone)],
-            MAIN_MENU: [
-                CallbackQueryHandler(da_main_menu_callback,
-                            pattern="^(menu_add_issue|menu_query_issue|issue_reason_.*|issue_type_.*|attach_.*|edit_ticket_.*|edit_field_.*|da_moreinfo\\|.*)$"),
-                MessageHandler(Filters.text & ~Filters.command, default_handler_da)
-            ],
-            NEW_ISSUE_ORDER: [CallbackQueryHandler(da_main_menu_callback, pattern="^select_order\\|.*")],
-            NEW_ISSUE_DESCRIPTION: [MessageHandler(Filters.text & ~Filters.command, new_issue_description)],
-            NEW_ISSUE_REASON: [CallbackQueryHandler(da_main_menu_callback, pattern="^issue_reason_.*")],
-            NEW_ISSUE_TYPE: [CallbackQueryHandler(da_main_menu_callback, pattern="^issue_type_.*")],
-            ASK_IMAGE: [CallbackQueryHandler(da_main_menu_callback, pattern="^(attach_yes|attach_no)$")],
-            WAIT_IMAGE: [MessageHandler(Filters.photo, wait_image)],
-            EDIT_PROMPT: [CallbackQueryHandler(edit_ticket_prompt_callback, pattern="^(edit_ticket_yes|edit_ticket_no)$")],
-            EDIT_FIELD: [
-                CallbackQueryHandler(edit_field_callback, pattern="^edit_field_.*"),
-                MessageHandler(Filters.text & ~Filters.command, edit_field_input_handler)
-            ],
-            MORE_INFO_PROMPT: [MessageHandler(Filters.text & ~Filters.command, da_awaiting_response_handler)]
+            MAIN_MENU: [CallbackQueryHandler(client_main_menu_callback,  # Use client_main_menu_callback instead of da_main_menu_callback
+                                           pattern="^(menu_query_issue|view\\|.*|add_solution\\|.*|notify_pref\\|.*)$")],
+            AWAITING_RESPONSE: [MessageHandler(Filters.text & ~Filters.command, awaiting_response_handler)]
         },
-        fallbacks=[CommandHandler('cancel', 
-            lambda update, context: update.message.reply_text("تم إلغاء العملية."))],per_message=True
+        fallbacks=[CommandHandler('cancel', lambda u, c: u.message.reply_text("تم إلغاء العملية."))]
     )
-
-    # Add handlers
+    
     dp.add_handler(conv_handler)
-    dp.add_handler(CallbackQueryHandler(da_callback_handler, pattern="^(close\\||da_moreinfo\\|).*"))
-
-    # Start the Bot
+    dp.add_handler(MessageHandler(Filters.text, default_handler_client))
+    
     updater.start_polling()
     updater.idle()
 
