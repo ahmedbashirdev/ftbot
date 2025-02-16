@@ -23,7 +23,7 @@ from telegram.ext import (
 import db
 import config
 import notifier  # For sending notifications to supervisors
-
+from db import get_db_session,Ticket
 # Configure Cloudinary using credentials from config.py
 cloudinary.config( 
     cloud_name = config.CLOUDINARY_CLOUD_NAME, 
@@ -138,83 +138,67 @@ def subscription_phone(update: Update, context: CallbackContext) -> int:
         return ConversationHandler.END
 
 def fetch_orders(query, context):
-    user = query.from_user
-    sub = db.get_subscription(user.id, "DA")
-
-    # ✅ Debug: Log the subscription data
-    logger.debug(f"fetch_orders() - Subscription data: {sub}")
-
-    if not sub:
-        safe_edit_message(query, text="❌ لم يتم العثور على بيانات الاشتراك.")
-        return MAIN_MENU
-
-    if not isinstance(sub, dict):
-        logger.error(f"fetch_orders() - Expected dictionary but got {type(sub)}")
-        safe_edit_message(query, text="❌ بيانات الاشتراك غير صحيحة.")
-        return MAIN_MENU
-
-    if "phone" not in sub:
-        logger.error(f"fetch_orders() - Subscription missing 'phone' key: {sub}")
-        safe_edit_message(query, text="❌ لم يتم العثور على رقم الهاتف في بيانات الاشتراك.")
-        return MAIN_MENU
-
-    agent_phone = sub["phone"]
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-
-    url = f"https://3e5440qr0c.execute-api.eu-west-3.amazonaws.com/dev/locus_info?agent_phone={agent_phone}&order_date=2025-02-10"
-
+    """Fetch orders for the DA from the API"""
     try:
+        # Show loading message first
+        safe_edit_message(query, text="جاري تحميل الطلبات...")
+        
+        # Get user from the callback query
+        user = query.from_user
+        sub = db.get_subscription(user.id, "DA")
+        
+        if not sub or not sub['phone']:
+            safe_edit_message(query, text="لم يتم العثور على بيانات الاشتراك أو رقم الهاتف.")
+            return MAIN_MENU
+            
+        agent_phone = sub['phone']
+        url = f"https://3e5440qr0c.execute-api.eu-west-3.amazonaws.com/dev/locus_info?agent_phone=01066440390&order_date=2024-11-05"
+        
+        logger.debug(f"Making API request to: {url}")
         response = requests.get(url)
         response.raise_for_status()
-
-        # ✅ Debug: Log the raw API response
-        logger.debug(f"fetch_orders() - Raw API response: {response.text}")
-
+        
         orders_data = response.json()
-
-        if not isinstance(orders_data, dict):
-            logger.error(f"fetch_orders() - Expected dict, got {type(orders_data)}")
-            safe_edit_message(query, text="❌ بيانات الطلب غير صحيحة.")
+        logger.debug(f"API Response: {orders_data}")
+        
+        if not orders_data or 'data' not in orders_data or not orders_data['data']:
+            safe_edit_message(query, text="لا توجد طلبات متاحة لهذا اليوم.")
             return MAIN_MENU
 
-        orders = orders_data.get("data", [])
-        if not isinstance(orders, list):
-            logger.error(f"fetch_orders() - Expected list, got {type(orders)}")
-            safe_edit_message(query, text="❌ بيانات الطلب غير صحيحة.")
-            return MAIN_MENU
-
-        if not orders:
-            safe_edit_message(query, text="❌ لا توجد طلبات اليوم.")
-            return MAIN_MENU
-
+        # Build keyboard from API data
         keyboard = []
-        for o in orders:
-            if not isinstance(o, dict):
-                logger.error(f"fetch_orders() - Invalid order format: {o}")
-                continue
+        for order in orders_data['data']:
+            if isinstance(order, dict):
+                order_id = str(order.get('order_id', ''))
+                client_name = str(order.get('client_name', ''))
+                if order_id and client_name:
+                    button = [InlineKeyboardButton(
+                        f"طلب {order_id} - {client_name}",
+                        callback_data=f"select_order|{order_id}|{client_name}"
+                    )]
+                    keyboard.append(button)
 
-            order_id = o.get("order_id", "N/A")
-            client_name = o.get("client_name", "غير معروف")
-
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"طلب {order_id} - {client_name}",
-                    callback_data=f"select_order|{urllib.parse.quote(str(order_id))}|{urllib.parse.quote(str(client_name))}"
-                )
-            ])
-
-        if not keyboard:
-            safe_edit_message(query, text="❌ لم يتم العثور على طلبات صالحة.")
+        if keyboard:
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            safe_edit_message(
+                query,
+                text="اختر الطلب الذي تريد رفع مشكلة عنه:",
+                reply_markup=reply_markup
+            )
+            return NEW_ISSUE_ORDER
+        else:
+            safe_edit_message(query, text="لا توجد طلبات متاحة.")
             return MAIN_MENU
 
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        safe_edit_message(query, text="📌 اختر الطلب الذي تريد رفع مشكلة عنه:", reply_markup=reply_markup)
-        return NEW_ISSUE_ORDER
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"fetch_orders() - API request error: {e}")
-        safe_edit_message(query, text=f"❌ حدث خطأ أثناء جلب الطلبات: {e}")
+    except requests.RequestException as e:
+        logger.error(f"API request error in fetch_orders: {e}", exc_info=True)
+        safe_edit_message(query, text="حدث خطأ أثناء الاتصال بالخادم. الرجاء المحاولة مرة أخرى.")
         return MAIN_MENU
+    except Exception as e:
+        logger.error(f"Error in fetch_orders: {e}", exc_info=True)
+        safe_edit_message(query, text="حدث خطأ أثناء جلب الطلبات. الرجاء المحاولة مرة أخرى.")
+        return MAIN_MENU
+
 def send_full_issue_details_to_client(query, ticket_id):
     """Send complete issue details to the client."""
     try:
@@ -591,30 +575,43 @@ def edit_field_input_handler(update: Update, context: CallbackContext) -> int:
         return EDIT_PROMPT
 
 def finalize_ticket_da(source, context, image_url):
-    if hasattr(source, 'from_user'):
-        user = source.from_user
-    else:
-        user = source.message.from_user
+    """Handles finalizing the ticket and inserting it into the database."""
+    user = source.from_user if hasattr(source, 'from_user') else source.message.from_user
     data = context.user_data
-    order_id = data.get('order_id')
-    description = data.get('description')
-    issue_reason = data.get('issue_reason')
-    issue_type = data.get('issue_type')
-    client_selected = data.get('client', 'غير محدد')
-    ticket_id = db.add_ticket(order_id, description, issue_reason, issue_type, client_selected, image_url, "Opened", user.id)
-    if hasattr(source, 'edit_message_text'):
-        source.edit_message_text(f"تم إنشاء التذكرة برقم {ticket_id}.\\nالحالة: Opened")
-    else:
-        context.bot.send_message(chat_id=user.id, text=f"تم إنشاء التذكرة برقم {ticket_id}.\\nالحالة: Opened")
-    if 'edit_log' in context.user_data:
-        for log_entry in context.user_data['edit_log']:
-            db.update_ticket_status(ticket_id, "Opened", log_entry)
-    ticket = db.get_ticket(ticket_id)
-    notifier.notify_supervisors(ticket)
-    context.user_data.clear()
-    return MAIN_MENU
 
-# =============================================================================
+    session = get_db_session()  # ✅ Ensure session is created before use
+
+    try:
+        new_ticket = db.Ticket(
+            order_id=data.get('order_id'),
+            issue_description=data.get('description'),  # ✅ Change to issue_description
+            issue_reason=data.get('issue_reason'),
+            issue_type=data.get('issue_type'),
+            client=data.get('client', 'غير محدد'),
+            image_url=image_url,
+            status="Opened",
+            da_id=user.id  # ✅ Use da_id instead of user_id
+
+        )
+        session.add(new_ticket)
+        session.commit()
+        ticket_id = new_ticket.ticket_id
+
+        # Notify supervisors
+        notifier.notify_supervisors(new_ticket)
+
+        # Send confirmation message
+        context.bot.send_message(chat_id=user.id, text=f"تم إنشاء التذكرة برقم {ticket_id}. الحالة: Opened")
+
+        return MAIN_MENU
+
+    except Exception as e:
+        session.rollback()
+        logger.error(f"❌ Error finalizing ticket: {e}")
+        return MAIN_MENU
+
+    finally:
+        session.close()   # ✅ Close the session# =============================================================================
 # Additional Info & Close Issue Flows
 # =============================================================================
 def da_awaiting_response_handler(update: Update, context: CallbackContext) -> int:
