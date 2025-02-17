@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
  AWAITING_DA_RESPONSE, EDIT_PROMPT, EDIT_FIELD, MORE_INFO_PROMPT) = range(12)
 
 
+
 STATUS_ACTIONS = {
     'Pending DA Action': {'label': 'Close Ticket', 'callback': 'close_ticket'},
     'Pending DA Response': {'label': 'Provide More Information', 'callback': 'provide_info'},
@@ -65,12 +66,8 @@ ISSUE_OPTIONS = {
     "التسليم": ["وصول متاخر", "تالف", "عطل بالسياره"]
 }
 
-# da_bot.py
-
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-# da_bot.py
-
-from telegram.ext import CallbackQueryHandler
+updater = Updater(token=config.DA_BOT_TOKEN, use_context=True)  # Ensure DA_BOT_TOKEN is defined in config.py
+dispatcher = updater.dispatcher  # Now dispatcher is defined
 
 def handle_callback_query(update, context):
     query = update.callback_query
@@ -104,15 +101,11 @@ def get_issue_types_for_reason(reason):
 # Helper: safe_edit_message
 # =============================================================================
 def safe_edit_message(query, text, reply_markup=None, parse_mode="HTML"):
-    """
-    Safely edits a message. If the original message is a photo (has a caption),
-    edit its caption; otherwise, edit its text.
-    """
-    if query.message.caption:
+    # Ensure the message has a caption before editing it
+    if hasattr(query.message, "caption") and query.message.caption:
         return query.edit_message_caption(caption=text, reply_markup=reply_markup, parse_mode=parse_mode)
     else:
         return query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-
 def start(update: Update, context: CallbackContext) -> int:
     """Start the conversation and check if user is subscribed."""
     logger.debug("Start command received")
@@ -280,30 +273,45 @@ def send_full_issue_details_to_client(query, ticket_id):
         safe_edit_message(query, text="حدث خطأ أثناء إرسال تفاصيل المشكلة.")
 
 # da_bot.py
-
-def da_main_menu_callback(update, context):
+AWAITING_ORDER_NUMBER = range(1)
+AWAITING_ORDER_SELECTION, AWAITING_ISSUE_DESCRIPTION = range(2)
+def da_main_menu_callback(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
+    query.answer()
     user_id = query.from_user.id
 
-    # Fetch tickets from the database
-    tickets = db.get_tickets_for_da(user_id)  # Ensure this function retrieves tickets relevant to the DA
+    if query.data == "menu_add_issue":
+        # Fetch orders for the DA
+        orders =  fetch_orders(update, context)
 
-    if not tickets:
-        query.edit_message_text(text="لا توجد تذاكر متاحة.")
-        return
+        if not orders:
+            query.edit_message_text("⚠️ لا توجد طلبات متاحة لك حاليًا.")
+            return ConversationHandler.END
 
-    for ticket in tickets:
-        ticket_id = ticket['id']
-        ticket_status = ticket['status']
-        ticket_description = ticket['description']
-        reply_markup = generate_ticket_buttons(ticket_status, ticket_id)
+        # Create buttons for each order
+        keyboard = [
+            [InlineKeyboardButton(f"طلب #{order['order_id']}", callback_data=f"select_order|{order['order_id']}")]
+            for order in orders
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Send the ticket information with the corresponding buttons
-        context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"تذكرة #{ticket_id}\nالوصف: {ticket_description}\nالحالة: {ticket_status}",
-            reply_markup=reply_markup
-        )
+        query.edit_message_text("يرجى اختيار الطلب المرتبط بالمشكلة:", reply_markup=reply_markup)
+        return AWAITING_ORDER_SELECTION
+
+    # Handle other callbacks...
+    return ConversationHandler.END
+# da_bot.py
+
+def da_order_selection_callback(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    query.answer()
+    order_id = query.data.split("|")[1]
+
+    # Store the selected order_id in user_data
+    context.user_data["current_issue"] = {"order_id": order_id}
+
+    query.edit_message_text(f"تم اختيار الطلب #{order_id}.\nيرجى إدخال وصف المشكلة:")
+    return AWAITING_ISSUE_DESCRIPTION
 def new_issue_description(update: Update, context: CallbackContext) -> int:
     description = update.message.text.strip()
     context.user_data['description'] = description
@@ -727,6 +735,12 @@ def main():
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('start', start)],
             states={
+                AWAITING_ORDER_SELECTION: [
+                    CallbackQueryHandler(da_order_selection_callback, pattern="^select_order\\|")
+                ],
+                AWAITING_ISSUE_DESCRIPTION: [
+                    MessageHandler(Filters.text & ~Filters.command, da_issue_description_handler)
+                ],
                 SUBSCRIPTION_PHONE: [
                     MessageHandler(Filters.text & ~Filters.command, subscription_phone)
                 ],
@@ -792,7 +806,24 @@ def main():
 
 def test_command(update: Update, context: CallbackContext):
     update.message.reply_text("Bot is working! Try /start")
+# da_bot.py
 
+def da_issue_description_handler(update: Update, context: CallbackContext) -> int:
+    user_id = update.message.from_user.id
+    issue_description = update.message.text
+
+    # Retrieve the selected order_id
+    order_id = context.user_data.get("current_issue", {}).get("order_id")
+
+    if not order_id:
+        update.message.reply_text("حدث خطأ في استرداد رقم الطلب. يرجى المحاولة مرة أخرى.")
+        return ConversationHandler.END
+
+    # Proceed with saving the issue to the database
+    # Implement your database logic here...
+
+    update.message.reply_text(f"تم تقديم المشكلة للطلب #{order_id} بنجاح.")
+    return ConversationHandler.END
 # In main(), add this before adding the conversation handler:
 
 # Add error handler function
