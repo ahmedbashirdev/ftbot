@@ -109,23 +109,20 @@ def send_issue_details_to_client(query, ticket_id):
             f"🔹 <b>الحالة:</b> {ticket['status']}")
 
     keyboard = [
-        [InlineKeyboardButton("حالياً", callback_data=f"notify_pref|{ticket_id}|now")],
-        [InlineKeyboardButton("خلال 15 دقيقة", callback_data=f"notify_pref|{ticket_id}|15")],
-        [InlineKeyboardButton("خلال 10 دقائق", callback_data=f"notify_pref|{ticket_id}|10")],
-        [InlineKeyboardButton("حل المشكلة", callback_data=f"solve|{ticket_id}")],
-        [InlineKeyboardButton("تجاهل", callback_data=f"ignore|{ticket_id}")]
-    ]
+            [InlineKeyboardButton("عرض التفاصيل", callback_data=f"notify_pref|{ticket_id}|now")],
+            [InlineKeyboardButton("حل المشكلة", callback_data=f"solve|{ticket_id}")]
+        ]
     
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if ticket['image_url']:
-        query.bot.send_photo(chat_id=query.message.chat_id,
-                             photo=ticket['image_url'],
-                             caption=text,
-                             reply_markup=reply_markup,
-                             parse_mode="HTML")
+    # If the original message is a photo message, edit its caption.
+        if query.message.photo:
+            query.message.edit_caption(caption=text, reply_markup=reply_markup, parse_mode="HTML")
+        else:
+            query.message.edit_text(text=text, reply_markup=reply_markup, parse_mode="HTML")
     else:
-        query.message.reply_text(text=text, reply_markup=reply_markup, parse_mode="HTML")
+        query.message.edit_text(text=text, reply_markup=reply_markup, parse_mode="HTML")
 def send_full_issue_details_to_client(query, ticket_id):
     ticket = db.get_ticket(ticket_id)
     text = (f"<b>تفاصيل التذكرة الكاملة:</b>\n"

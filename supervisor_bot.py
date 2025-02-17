@@ -19,8 +19,106 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Conversation states
-(SUBSCRIPTION_PHONE, MAIN_MENU, SEARCH_TICKETS, AWAITING_RESPONSE) = range(4)
+(SUBSCRIPTION_PHONE, MAIN_MENU, SEARCH_TICKETS, AWAITING_RESPONSE, WAITING_FOR_ACTION) = range(5)
 
+def search_order_callback(update: Update, context: CallbackContext):
+    """Handles searching for tickets by order ID."""
+    query = update.callback_query
+    query.answer()
+    order_id = query.data.split("|")[1]
+
+    tickets = db.search_tickets_by_order(order_id)  # Fetch tickets from the database
+
+    if not tickets:
+        query.edit_message_text(text="⚠️ لا توجد تذاكر لهذا الطلب.")
+        return WAITING_FOR_ACTION
+
+    for ticket in tickets:
+        ticket_id = ticket['ticket_id']
+        description = ticket['issue_description']
+        status = ticket['status']
+        image_url = ticket.get('image_url')
+
+        text = (
+            f"<b>تذكرة #{ticket_id}</b>\n"
+            f"رقم الطلب: {ticket['order_id']}\n"
+            f"الوصف: {description}\n"
+            f"الحالة: {status}"
+        )
+
+        keyboard = [[InlineKeyboardButton("عرض التفاصيل", callback_data=f"view_ticket|{ticket_id}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        if image_url:
+            context.bot.send_photo(
+                chat_id=query.message.chat_id,
+                photo=image_url,
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML"
+            )
+        else:
+            context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML"
+            )
+
+    return WAITING_FOR_ACTION
+# supervisor_bot.py
+
+def view_ticket_callback(update: Update, context: CallbackContext):
+    """Handles viewing a specific ticket's details."""
+    query = update.callback_query
+    query.answer()
+    ticket_id = int(query.data.split("|")[1])
+
+    ticket = db.get_ticket(ticket_id)  # Fetch the ticket details from the database
+
+    if not ticket:
+        query.edit_message_text(text="⚠️ لم يتم العثور على هذه التذكرة.")
+        return WAITING_FOR_ACTION
+
+    description = ticket['issue_description']
+    status = ticket['status']
+    image_url = ticket.get('image_url')
+
+    text = (
+        f"<b>تفاصيل التذكرة #{ticket_id}</b>\n"
+        f"رقم الطلب: {ticket['order_id']}\n"
+        f"الوصف: {description}\n"
+        f"الحالة: {status}"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("إغلاق التذكرة", callback_data=f"close_ticket|{ticket_id}")],
+        [InlineKeyboardButton("الرجوع", callback_data="back_to_tickets")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if ticket.get("logs"):
+        try:
+            logs_list = json.loads(ticket["logs"])
+            logs_text = "\n".join(
+                [f"{entry.get('timestamp', '')}: {entry.get('action', '')} - {entry.get('message', '')}"
+                 for entry in logs_list]
+            )
+            text += f"\n\n📝 <b>السجلات:</b>\n{logs_text}"
+        except Exception as e:
+            logger.error(f"Error parsing logs for ticket #{ticket['ticket_id']}: {e}")
+    # Then send using edit or send_photo as appropriate…
+    if ticket.get('image_url'):
+        query.message.reply_photo(
+            photo=ticket['image_url'],
+            caption=text,
+            reply_markup=query.message.reply_markup,  # if you want to keep existing buttons, or omit if none
+            parse_mode="HTML"
+        )
+    else:
+        query.message.reply_text(text=text, parse_mode="HTML")
+
+    return WAITING_FOR_ACTION
 def safe_edit_message(query, text, reply_markup=None, parse_mode="HTML"):
     """
     Helper function that edits a message.
@@ -105,6 +203,8 @@ def supervisor_main_menu_callback(update: Update, context: CallbackContext) -> i
                     f"نوع المشكلة: {ticket['issue_type']}\n"
                     f"الحالة: {ticket['status']}\n\n"
                     f"📝 <b>السجلات:</b>\n{logs}")
+                    
+            
 
             keyboard = [
                 [InlineKeyboardButton("حل المشكلة", callback_data=f"solve|{ticket_id}")],
@@ -308,27 +408,50 @@ def default_handler_supervisor(update: Update, context: CallbackContext) -> int:
     reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text("الرجاء اختيار خيار:", reply_markup=reply_markup)
     return MAIN_MENU
+def close_ticket_callback(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    query.answer()
+    ticket_id = int(query.data.split("|")[1])
+    db.update_ticket_status(ticket_id, "Closed", {"action": "closed"})
+    query.message.edit_text(text=f"تم إغلاق التذكرة #{ticket_id}.")
+    return MAIN_MENU
 def error_handler(update: Update, context: CallbackContext):
     """Log Errors caused by Updates."""
     logger.error(f"Update {update} caused error {context.error}")
     if update and update.message:
         update.message.reply_text("⚠️ حدث خطأ أثناء معالجة الطلب. الرجاء المحاولة مرة أخرى.")
+def cancel(update: Update, context: CallbackContext) -> int:
+    update.message.reply_text("تم إلغاء العملية.")
+    return ConversationHandler.END
 def main():
     updater = Updater(config.SUPERVISOR_BOT_TOKEN, use_context=True)
     
     dp = updater.dispatcher
     dp.add_error_handler(error_handler)
+
+# Define the conversation handler
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
+        entry_points=[CommandHandler("start", start)],
         states={
-            SUBSCRIPTION_PHONE: [MessageHandler(Filters.text & ~Filters.command, subscription_phone)],
-            MAIN_MENU: [CallbackQueryHandler(supervisor_main_menu_callback,  # Changed from da_main_menu_callback
-                                             pattern="^(menu_show_all|menu_query_issue|view\\|.*|solve\\|.*|moreinfo\\|.*|sendclient\\|.*|sendto_da\\|.*|confirm_sendclient\\|.*|cancel_sendclient\\|.*|confirm_sendto_da\\|.*|cancel_sendto_da\\|.*)")],
-            SEARCH_TICKETS: [MessageHandler(Filters.text & ~Filters.command, search_tickets)],
-            AWAITING_RESPONSE: [MessageHandler(Filters.text & ~Filters.command, awaiting_response_handler)]
+            WAITING_FOR_ACTION: [
+                CallbackQueryHandler(search_order_callback, pattern="^search_order|"),
+                CallbackQueryHandler(view_ticket_callback, pattern="^view_ticket|"),
+                CallbackQueryHandler(close_ticket_callback, pattern="^close_ticket|"),
+                CallbackQueryHandler(back_to_tickets_callback, pattern="^back_to_tickets")
+            ],
+            MAIN_MENU: [
+            CallbackQueryHandler(supervisor_main_menu_callback, 
+                pattern="^(menu_show_all|menu_query_issue|view\\|.*|solve\\|.*|moreinfo\\|.*|sendclient\\|.*|sendto_da\\|.*)$")
+            ],
+            SEARCH_TICKETS: [
+                MessageHandler(Filters.text & ~Filters.command, search_tickets)
+            ],
+            AWAITING_RESPONSE: [
+                MessageHandler(Filters.text & ~Filters.command, awaiting_response_handler)
+            ]
         },
-        fallbacks=[CommandHandler('cancel', lambda u, c: u.message.reply_text("  ."))]
-    )
+        fallbacks=[CommandHandler("cancel", cancel)]
+        )
     dp.add_handler(conv_handler)
     dp.add_handler(MessageHandler(Filters.text, default_handler_supervisor))
     updater.start_polling()

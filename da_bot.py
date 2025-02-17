@@ -268,6 +268,14 @@ def send_full_issue_details_to_client(query, ticket_id):
                 caption=text,
                 parse_mode="HTML"
             )
+        if ticket.get("logs"):
+            try:
+                logs_list = json.loads(ticket["logs"])
+                logs_text = "\n".join([f"{entry.get('timestamp','')}: {entry.get('action','')} - {entry.get('message','')}" 
+                                        for entry in logs_list])
+                text += f"\n\n📝 <b>السجلات:</b>\n{logs_text}"
+            except Exception as e:
+                logger.error(f"Error parsing logs: {e}")
         else:
             # If no image, just send the text
             query.message.reply_text(text, parse_mode="HTML")
@@ -277,34 +285,106 @@ def send_full_issue_details_to_client(query, ticket_id):
         safe_edit_message(query, text="حدث خطأ أثناء إرسال تفاصيل المشكلة.")
 
 # da_bot.py
-AWAITING_ORDER_NUMBER = range(1)
+# AWAITING_ORDER_NUMBER = range(1)
 AWAITING_ORDER_SELECTION, AWAITING_ISSUE_DESCRIPTION = range(2)
 def da_main_menu_callback(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     query.answer()
-    user_id = query.from_user.id
-
-    if query.data == "menu_add_issue":
-        # Fetch orders for the DA
-        orders =  fetch_orders(query, context)
-
-        if not orders:
-            query.message.edit_text("⚠️ لا توجد طلبات متاحة لك حاليًا.")
-            return ConversationHandler.END
-
-        # Create buttons for each order
+    data = query.data
+    logger.debug(f"da_main_menu_callback: Received callback data: {data}")  # ✅ Debug log
+    logger.debug(f"Raw callback query: {query}")  # ✅ Debug log
+    
+    if data == "menu_add_issue":
+        # Start the fetch_orders flow when adding a new issue
+        return fetch_orders(query, context)
+    elif data == "menu_query_issue":
+        # Get user's tickets
+        user = query.from_user
+        tickets = db.get_tickets_by_user(user.id)
+        
+        status_mapping = {
+            "Opened": "مفتوحة",
+            "Pending DA Action": "في انتظار إجراء الوكيل",
+            "Awaiting Client Response": "في انتظار رد العميل",
+            "Client Responded": "تم رد العميل",
+            "Client Ignored": "تم تجاهل العميل",
+            "Closed": "مغلقة",
+            "Additional Info Provided": "تم توفير معلومات إضافية",
+            "Pending DA Response": "في انتظار رد الوكيل"
+        }
+        
+        if tickets:
+            for ticket in tickets:
+                status_ar = status_mapping.get(ticket['status'], ticket['status'])
+                resolution = ""
+                if ticket['status'] == "Closed":
+                    resolution = "\nالحل: تم الحل."
+                text = (f"<b>تذكرة #{ticket['ticket_id']}</b>\n"
+                       f"رقم الطلب: {ticket['order_id']}\n"
+                       f"الوصف: {ticket['issue_description']}\n"
+                       f"سبب المشكلة: {ticket['issue_reason']}\n"
+                       f"نوع المشكلة: {ticket['issue_type']}\n"
+                       f"الحالة: {status_ar}{resolution}")
+                query.message.reply_text(text, parse_mode="HTML")
+        else:
+            safe_edit_message(query, text="لا توجد تذاكر.")
+        return MAIN_MENU
+        
+    # Handle order selection
+    elif data.startswith("select_order|"):
+        parts = data.split("|")
+        if len(parts) < 3:
+            safe_edit_message(query, text="بيانات الطلب غير صحيحة.")
+            return MAIN_MENU
+        order_id = parts[1]
+        client_name = parts[2]
+        context.user_data['order_id'] = order_id
+        context.user_data['client'] = client_name
+        safe_edit_message(query, text=f"تم اختيار الطلب رقم {order_id} للعميل {client_name}.\nالآن، صف المشكلة التي تواجهها:")
+        return NEW_ISSUE_DESCRIPTION
+        
+    # Handle issue reason selection
+    elif data.startswith("issue_reason_"):
+        reason = data.split("_", 2)[2]
+        context.user_data['issue_reason'] = reason
+        types = get_issue_types_for_reason(reason)
+        keyboard = [[InlineKeyboardButton(t, callback_data="issue_type_" + t)] for t in types]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        safe_edit_message(query, text="اختر نوع المشكلة:", reply_markup=reply_markup)
+        return NEW_ISSUE_TYPE
+        
+    # Handle issue type selection
+    elif data.startswith("issue_type_"):
+        issue_type = urllib.parse.unquote(data.split("_", 2)[2])
+        context.user_data['issue_type'] = issue_type
         keyboard = [
-            [InlineKeyboardButton(f"طلب #{order['order_id']}", callback_data=f"select_order|{order['order_id']}")]
-            for order in orders
+            [InlineKeyboardButton("نعم", callback_data="attach_yes"),
+             InlineKeyboardButton("لا", callback_data="attach_no")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
+        safe_edit_message(query, text="هل تريد إرفاق صورة للمشكلة؟", reply_markup=reply_markup)
+        return ASK_IMAGE
+        
+    # Handle image attachment choice
+    elif data in ["attach_yes", "attach_no"]:
+        if data == "attach_yes":
+            safe_edit_message(query, text="يرجى إرسال الصورة:")
+            return WAIT_IMAGE
+        else:
+            return show_ticket_summary_for_edit(query, context)
+            
+    # Handle additional info request
+    elif data.startswith("da_moreinfo|"):
+        return da_moreinfo_callback_handler(update, context)
+        
+    # Handle ticket editing
+    elif data.startswith("edit_ticket_") or data.startswith("edit_field_"):
+        return edit_ticket_prompt_callback(update, context)
+        
+    else:
+        safe_edit_message(query, text="الخيار غير معروف.")
+        return MAIN_MENU
 
-        query.message.edit_text("يرجى اختيار الطلب المرتبط بالمشكلة:", reply_markup=reply_markup)
-        return AWAITING_ORDER_SELECTION
-
-    # Handle other callbacks...
-    return ConversationHandler.END
-# da_bot.py
 
 def da_order_selection_callback(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
@@ -780,12 +860,10 @@ def main():
                     MessageHandler(Filters.text & ~Filters.command, subscription_phone)
                 ],
                 MAIN_MENU: [
-                    CallbackQueryHandler(da_main_menu_callback, pattern='^(menu_|select_order|issue_reason_|issue_type_|attach_|da_moreinfo|edit_ticket_|edit_field_)'),
+                    CallbackQueryHandler(da_main_menu_callback, pattern='^(menu_|issue_reason_|issue_type_|attach_|da_moreinfo|edit_ticket_|edit_field_)'),
                     MessageHandler(Filters.text & ~Filters.command, default_handler_da)
                 ],
-                NEW_ISSUE_ORDER: [
-                    CallbackQueryHandler(da_main_menu_callback, pattern='^select_order')
-                ],
+                NEW_ISSUE_ORDER: [CallbackQueryHandler(da_order_selection_callback, pattern="^select_order\\|")],
                 NEW_ISSUE_DESCRIPTION: [
                     MessageHandler(Filters.text & ~Filters.command, new_issue_description)
                 ],
