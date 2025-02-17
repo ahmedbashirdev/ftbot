@@ -69,21 +69,20 @@ ISSUE_OPTIONS = {
 updater = Updater(token=config.DA_BOT_TOKEN, use_context=True)  # Ensure DA_BOT_TOKEN is defined in config.py
 dispatcher = updater.dispatcher  # Now dispatcher is defined
 
-def handle_callback_query(update, context):
-    query = update.callback_query
-    data = query.data.split('|')
-    action = data[0]
-    ticket_id = data[1]
+def handle_callback_query(update: Update, context: CallbackContext):
+    try:
+        query = update.callback_query
+        data = query.data.split('|')
+        action = data[0]
+        ticket_id = data[1]
 
-    if action == 'close_ticket':
-        # Logic to close the ticket
-        db.close_ticket(ticket_id)  # Implement this function in your db module
-        query.edit_message_text(text=f"تم إغلاق التذكرة #{ticket_id}.")
-    elif action == 'provide_info':
-        # Logic to prompt DA to provide more information
-        query.edit_message_text(text=f"يرجى تقديم معلومات إضافية للتذكرة #{ticket_id}.")
-    # Add more handlers as needed
-
+        if action == 'close_ticket':
+            db.close_ticket(ticket_id)
+            query.message.edit_text(text=f"تم إغلاق التذكرة #{ticket_id}.")  # ✅ Fix
+        elif action == 'provide_info':
+            query.message.edit_text(text=f"يرجى تقديم معلومات إضافية للتذكرة #{ticket_id}.")  # ✅ Fix
+    except AttributeError as e:
+        logger.error(f"AttributeError: {e}")
 # Add the handler to the dispatcher
 dispatcher.add_handler(CallbackQueryHandler(handle_callback_query))
 def generate_ticket_buttons(ticket_status):
@@ -103,9 +102,9 @@ def get_issue_types_for_reason(reason):
 def safe_edit_message(query, text, reply_markup=None, parse_mode="HTML"):
     # Ensure the message has a caption before editing it
     if hasattr(query.message, "caption") and query.message.caption:
-        return query.edit_message_caption(caption=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        return query.message.edit_caption(caption=text, reply_markup=reply_markup, parse_mode=parse_mode)
     else:
-        return query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        return query.message.edit_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
 def start(update: Update, context: CallbackContext) -> int:
     """Start the conversation and check if user is subscribed."""
     logger.debug("Start command received")
@@ -170,27 +169,30 @@ def subscription_phone(update: Update, context: CallbackContext) -> int:
 def fetch_orders(query, context):
     """Fetch orders for the DA from the API"""
     try:
-        # Show loading message first
-        safe_edit_message(query, text="جاري تحميل الطلبات...")
-        
-        # Get user from the callback query
-        user = query.from_user
+        # ✅ Check if query.message exists before calling edit_text
+        if query.message:
+            query.message.edit_text(text="جاري تحميل الطلبات...")
+        else:
+            logger.warning("⚠️ fetch_orders: query.message is None, cannot edit message.")
+
+        # ✅ Get user correctly from `query.from_user`
+        user = query.from_user  # 🔥 Fix: This was incorrectly using `update`
         sub = db.get_subscription(user.id, "DA")
-        
+
         if not sub or not sub['phone']:
             safe_edit_message(query, text="لم يتم العثور على بيانات الاشتراك أو رقم الهاتف.")
             return MAIN_MENU
-            
+
         agent_phone = sub['phone']
         url = f"https://3e5440qr0c.execute-api.eu-west-3.amazonaws.com/dev/locus_info?agent_phone=01066440390&order_date=2024-11-05"
-        
+
         logger.debug(f"Making API request to: {url}")
         response = requests.get(url)
         response.raise_for_status()
-        
+
         orders_data = response.json()
         logger.debug(f"API Response: {orders_data}")
-        
+
         if not orders_data or 'data' not in orders_data or not orders_data['data']:
             safe_edit_message(query, text="لا توجد طلبات متاحة لهذا اليوم.")
             return MAIN_MENU
@@ -210,11 +212,14 @@ def fetch_orders(query, context):
 
         if keyboard:
             reply_markup = InlineKeyboardMarkup(keyboard)
-            safe_edit_message(
-                query,
-                text="اختر الطلب الذي تريد رفع مشكلة عنه:",
-                reply_markup=reply_markup
-            )
+
+            # ✅ Check again before editing the message
+            if query.message:
+                query.message.edit_text("اختر الطلب الذي تريد رفع مشكلة عنه:", reply_markup=reply_markup)
+            else:
+                logger.warning("⚠️ fetch_orders: query.message is None, sending a new message instead.")
+                context.bot.send_message(chat_id=user.id, text="اختر الطلب الذي تريد رفع مشكلة عنه:", reply_markup=reply_markup)
+
             return NEW_ISSUE_ORDER
         else:
             safe_edit_message(query, text="لا توجد طلبات متاحة.")
@@ -228,7 +233,6 @@ def fetch_orders(query, context):
         logger.error(f"Error in fetch_orders: {e}", exc_info=True)
         safe_edit_message(query, text="حدث خطأ أثناء جلب الطلبات. الرجاء المحاولة مرة أخرى.")
         return MAIN_MENU
-
 def send_full_issue_details_to_client(query, ticket_id):
     """Send complete issue details to the client."""
     try:
@@ -282,10 +286,10 @@ def da_main_menu_callback(update: Update, context: CallbackContext) -> int:
 
     if query.data == "menu_add_issue":
         # Fetch orders for the DA
-        orders =  fetch_orders(update, context)
+        orders =  fetch_orders(query, context)
 
         if not orders:
-            query.edit_message_text("⚠️ لا توجد طلبات متاحة لك حاليًا.")
+            query.message.edit_text("⚠️ لا توجد طلبات متاحة لك حاليًا.")
             return ConversationHandler.END
 
         # Create buttons for each order
@@ -295,7 +299,7 @@ def da_main_menu_callback(update: Update, context: CallbackContext) -> int:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        query.edit_message_text("يرجى اختيار الطلب المرتبط بالمشكلة:", reply_markup=reply_markup)
+        query.message.edit_text("يرجى اختيار الطلب المرتبط بالمشكلة:", reply_markup=reply_markup)
         return AWAITING_ORDER_SELECTION
 
     # Handle other callbacks...
@@ -305,13 +309,39 @@ def da_main_menu_callback(update: Update, context: CallbackContext) -> int:
 def da_order_selection_callback(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     query.answer()
-    order_id = query.data.split("|")[1]
 
-    # Store the selected order_id in user_data
-    context.user_data["current_issue"] = {"order_id": order_id}
+    # ✅ Debug Log: Confirm function is triggered
+    logger.debug(f"✅ da_order_selection_callback triggered. Raw data: {query.data}")
 
-    query.edit_message_text(f"تم اختيار الطلب #{order_id}.\nيرجى إدخال وصف المشكلة:")
-    return AWAITING_ISSUE_DESCRIPTION
+    try:
+        # ✅ Extract Order ID & Client Name
+        data = query.data.split("|")
+        if len(data) < 2:
+            logger.error("❌ Invalid callback data format: Missing order ID")
+            query.message.edit_text("⚠️ حدث خطأ: بيانات الطلب غير صحيحة. حاول مرة أخرى.")
+            return MAIN_MENU
+
+        order_id = data[1]
+        client_name = data[2] if len(data) > 2 else "غير معروف"
+
+        # ✅ Store the selected order in user_data
+        context.user_data["current_issue"] = {"order_id": order_id, "client_name": client_name}
+
+        # ✅ Debug Log: Ensure order is saved in user_data
+        logger.debug(f"✅ Stored Order: {context.user_data['current_issue']}")
+
+        # ✅ Confirm selection and prompt for issue description
+        query.message.edit_text(f"تم اختيار الطلب #{order_id} - {client_name}.\n\nيرجى إدخال وصف المشكلة:")
+
+        # ✅ Debug Log: Confirm function is returning the correct state
+        logger.debug(f"✅ Transitioning to NEW_ISSUE_DESCRIPTION state")
+
+        return NEW_ISSUE_DESCRIPTION
+
+    except Exception as e:
+        logger.error(f"❌ Exception in da_order_selection_callback: {e}", exc_info=True)
+        query.message.edit_text("⚠️ حدث خطأ أثناء معالجة الطلب. حاول مرة أخرى.")
+        return MAIN_MENU
 def new_issue_description(update: Update, context: CallbackContext) -> int:
     description = update.message.text.strip()
     context.user_data['description'] = description
@@ -415,7 +445,7 @@ def edit_ticket_prompt_callback(update: Update, context: CallbackContext):
              InlineKeyboardButton("الصورة", callback_data="edit_field_image")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        safe_edit_message(query, text="اختر الحقل الذي تريد تعديله:", reply_markup=reply_markup)
+        query.message.edit_text(text="اختر الحقل الذي تريد تعديله:", reply_markup=reply_markup)
         return EDIT_FIELD
     else:
         keyboard = [
@@ -628,7 +658,7 @@ def da_callback_handler(update: Update, context: CallbackContext) -> int:  # Cha
     if data.startswith("close|"):
         ticket_id = int(data.split("|")[1])
         db.update_ticket_status(ticket_id, "Closed", {"action": "da_closed"})
-        safe_edit_message(query, text="تم إغلاق التذكرة بنجاح.")
+        query.message.edit_text("تم إغلاق التذكرة بنجاح.")
         bot_sup = Bot(token=config.SUPERVISOR_BOT_TOKEN)
         for sup in db.get_supervisors():
             try:
@@ -735,8 +765,13 @@ def main():
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('start', start)],
             states={
+                # ✅ Fix: Handle Order Selection Correctly
                 AWAITING_ORDER_SELECTION: [
                     CallbackQueryHandler(da_order_selection_callback, pattern="^select_order\\|")
+                ],
+                # ✅ Fix: Ensure issue description input works
+                NEW_ISSUE_DESCRIPTION: [
+                    MessageHandler(Filters.text & ~Filters.command, new_issue_description)
                 ],
                 AWAITING_ISSUE_DESCRIPTION: [
                     MessageHandler(Filters.text & ~Filters.command, da_issue_description_handler)
