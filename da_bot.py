@@ -310,7 +310,7 @@ def da_order_selection_callback(update: Update, context: CallbackContext) -> int
     query = update.callback_query
     query.answer()
 
-    # ✅ Debug Log: Confirm function is triggered
+    # ✅ Log Debugging Info
     logger.debug(f"✅ da_order_selection_callback triggered. Raw data: {query.data}")
 
     try:
@@ -326,6 +326,7 @@ def da_order_selection_callback(update: Update, context: CallbackContext) -> int
 
         # ✅ Store the selected order in user_data
         context.user_data["current_issue"] = {"order_id": order_id, "client_name": client_name}
+        context.user_data["state"] = NEW_ISSUE_DESCRIPTION  # ✅ Force State Update
 
         # ✅ Debug Log: Ensure order is saved in user_data
         logger.debug(f"✅ Stored Order: {context.user_data['current_issue']}")
@@ -336,7 +337,7 @@ def da_order_selection_callback(update: Update, context: CallbackContext) -> int
         # ✅ Debug Log: Confirm function is returning the correct state
         logger.debug(f"✅ Transitioning to NEW_ISSUE_DESCRIPTION state")
 
-        return NEW_ISSUE_DESCRIPTION
+        return NEW_ISSUE_DESCRIPTION  # ✅ Ensure the conversation moves forward
 
     except Exception as e:
         logger.error(f"❌ Exception in da_order_selection_callback: {e}", exc_info=True)
@@ -765,11 +766,10 @@ def main():
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('start', start)],
             states={
-                # ✅ Fix: Handle Order Selection Correctly
                 AWAITING_ORDER_SELECTION: [
                     CallbackQueryHandler(da_order_selection_callback, pattern="^select_order\\|")
                 ],
-                # ✅ Fix: Ensure issue description input works
+
                 NEW_ISSUE_DESCRIPTION: [
                     MessageHandler(Filters.text & ~Filters.command, new_issue_description)
                 ],
