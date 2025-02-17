@@ -70,28 +70,33 @@ def supervisor_main_menu_callback(update: Update, context: CallbackContext) -> i
                         f"الوصف: {ticket['issue_description']}\n"
                         f"الحالة: {ticket['status']}")
                 keyboard = [[InlineKeyboardButton("عرض التفاصيل", callback_data=f"view|{ticket['ticket_id']}")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)  # ✅ Ensure reply_markup is defined
+
                 # If the ticket has an image, send it as a photo message
                 if ticket['image_url']:
-                    query.message.reply_photo(photo=ticket['image_url'])
-                safe_edit_message(query, text=text, reply_markup=reply_markup, parse_mode="HTML")
+                    query.message.reply_photo(photo=ticket['image_url'], caption=text, parse_mode="HTML", reply_markup=reply_markup)
+                else:
+                    safe_edit_message(query, text=text, reply_markup=reply_markup, parse_mode="HTML")  # ✅ Now it will always be defined
         else:
-            safe_edit_message(query, text="لا توجد تذاكر مفتوحة حالياً.")
+            safe_edit_message(query, text="لا توجد تذاكر مفتوحة حالياً.", reply_markup=None)  # ✅ Explicitly passing None
         return MAIN_MENU
     elif data == "menu_query_issue":
         safe_edit_message(query, text="أدخل رقم الطلب:")
         return SEARCH_TICKETS
     elif data.startswith("view|"):
         ticket_id = int(data.split("|")[1])
-        ticket = db.get_ticket(ticket_id)
+        ticket = db.get_ticket(ticket_id)  # ✅ This should now work correctly
+
         if ticket:
-            try:
-                logs = ""
-                if ticket["logs"]:
+            logs = ""
+            if ticket["logs"]:
+                try:
                     logs_list = json.loads(ticket["logs"])
                     logs = "\n".join([f"{entry.get('timestamp', '')}: {entry.get('action', '')} - {entry.get('message', '')}"
-                                       for entry in logs_list])
-            except Exception:
-                logs = "لا توجد سجلات إضافية."
+                                    for entry in logs_list])
+                except Exception:
+                    logs = "لا توجد سجلات إضافية."
+
             text = (f"<b>تفاصيل التذكرة #{ticket['ticket_id']}</b>\n"
                     f"رقم الطلب: {ticket['order_id']}\n"
                     f"العميل: {ticket['client']}\n"
@@ -99,19 +104,23 @@ def supervisor_main_menu_callback(update: Update, context: CallbackContext) -> i
                     f"سبب المشكلة: {ticket['issue_reason']}\n"
                     f"نوع المشكلة: {ticket['issue_type']}\n"
                     f"الحالة: {ticket['status']}\n\n"
-                    f"السجلات:\n{logs}")
+                    f"📝 <b>السجلات:</b>\n{logs}")
+
             keyboard = [
                 [InlineKeyboardButton("حل المشكلة", callback_data=f"solve|{ticket_id}")],
-                [InlineKeyboardButton("طلب المزيد من المعلومات", callback_data=f"moreinfo|{ticket_id}")],
+                [InlineKeyboardButton("طلب معلومات إضافية", callback_data=f"moreinfo|{ticket_id}")],
                 [InlineKeyboardButton("إرسال إلى العميل", callback_data=f"sendclient|{ticket_id}")]
             ]
+
             if ticket["status"] == "Client Responded":
                 keyboard.insert(0, [InlineKeyboardButton("إرسال للحالة إلى الوكيل", callback_data=f"sendto_da|{ticket_id}")])
+
             reply_markup = InlineKeyboardMarkup(keyboard)
-            # If the original message was a photo message, edit its caption; otherwise, edit its text.
             safe_edit_message(query, text=text, reply_markup=reply_markup, parse_mode="HTML")
+
         else:
             safe_edit_message(query, text="التذكرة غير موجودة.")
+
         return MAIN_MENU
     elif data.startswith("solve|"):
         ticket_id = int(data.split("|")[1])
@@ -183,7 +192,10 @@ def supervisor_main_menu_callback(update: Update, context: CallbackContext) -> i
 
 def search_tickets(update: Update, context: CallbackContext) -> int:
     query_text = update.message.text.strip()
+    
+    # ✅ Ensure function exists in db.py
     tickets = db.search_tickets_by_order(query_text)
+
     if tickets:
         for ticket in tickets:
             text = (f"<b>تذكرة #{ticket['ticket_id']}</b>\n"
@@ -196,10 +208,7 @@ def search_tickets(update: Update, context: CallbackContext) -> int:
             update.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
     else:
         update.message.reply_text("لم يتم العثور على تذاكر مطابقة.")
-    keyboard = [[InlineKeyboardButton("عرض الكل", callback_data="menu_show_all"),
-                InlineKeyboardButton("استعلام عن مشكلة", callback_data="menu_query_issue")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text("اختر خياراً:", reply_markup=reply_markup)
+    
     return MAIN_MENU
 
 def awaiting_response_handler(update: Update, context: CallbackContext) -> int:
@@ -223,38 +232,49 @@ def awaiting_response_handler(update: Update, context: CallbackContext) -> int:
 
 def notify_da(ticket_id, message, info_request=False):
     ticket = db.get_ticket(ticket_id)
-    da_id = ticket['da_id']
-    if not da_id:
-        logger.error("لا يوجد وكيل معين للتذكرة.")
+    if not ticket:
+        logger.error(f"⚠️ notify_da: Ticket {ticket_id} not found")
         return
-    bot = Bot(token=config.SUPERVISOR_BOT_TOKEN)
-    if info_request:
-        text = (f"<b>طلب معلومات إضافية للتذكرة #{ticket_id}</b>\n"
-                f"رقم الطلب: {ticket['order_id']}\n"
-                f"الوصف: {ticket['issue_description']}\n"
-                f"الحالة: {ticket['status']}\n"
-                f"المعلومات المطلوبة: {message}")
-        keyboard = [[InlineKeyboardButton("تطبيق المعلومات الإضافية", callback_data=f"da_moreinfo|{ticket_id}")]]
-    else:
-        text = (f"<b>حل للمشكلة للتذكرة #{ticket_id}</b>\n"
-                f"رقم الطلب: {ticket['order_id']}\n"
-                f"الوصف: {ticket['issue_description']}\n"
-                f"الحالة: {ticket['status']}\n"
-                f"الحل: {message}")
-        keyboard = [[InlineKeyboardButton("إغلاق التذكرة", callback_data=f"close|{ticket_id}")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    try:
-        da_sub = db.get_subscription(da_id, "DA")
-        if da_sub:
-            if ticket['image_url']:
-                bot.send_photo(chat_id=da_sub['chat_id'], photo=ticket['image_url'],
-                                caption=text, reply_markup=reply_markup, parse_mode="HTML")
-            else:
-                bot.send_message(chat_id=da_sub['chat_id'], text=text,
-                                reply_markup=reply_markup, parse_mode="HTML")
-    except Exception as e:
-        logger.error(f"Error notifying DA: {e}")
 
+    da_id = ticket.get('da_id')  # Ensure this retrieves the correct DA ID
+    if not da_id:
+        logger.error(f"⚠️ notify_da: No DA assigned to ticket #{ticket_id}")
+        return
+
+    bot = Bot(token=config.SUPERVISOR_BOT_TOKEN)
+
+    if info_request:
+        text = (f"🔹 <b>طلب معلومات إضافية</b> للتذكرة #{ticket_id}\n"
+                f"📦 رقم الطلب: {ticket['order_id']}\n"
+                f"📌 الوصف: {ticket['issue_description']}\n"
+                f"📢 الحالة: {ticket['status']}\n\n"
+                f"❓ المعلومات المطلوبة: {message}")
+        keyboard = [[InlineKeyboardButton("إرسال المعلومات", callback_data=f"da_moreinfo|{ticket_id}")]]
+    else:
+        text = (f"✅ <b>حل مشكلة التذكرة #{ticket_id}</b>\n"
+                f"📦 رقم الطلب: {ticket['order_id']}\n"
+                f"📌 الوصف: {ticket['issue_description']}\n"
+                f"📢 الحالة: {ticket['status']}\n\n"
+                f"📝 الحل: {message}")
+        keyboard = [[InlineKeyboardButton("إغلاق التذكرة", callback_data=f"close|{ticket_id}")]]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    try:
+        da_sub = db.get_subscription(da_id, "DA")  # Ensure DA exists
+        if da_sub:
+            chat_id = da_sub.get('chat_id')
+            if not chat_id:
+                logger.error(f"⚠️ notify_da: No chat_id found for DA {da_id}")
+                return
+            
+            bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode="HTML")
+            logger.info(f"✅ notify_da: Sent request to DA (Chat ID: {chat_id})")
+        else:
+            logger.error(f"⚠️ notify_da: No subscription found for DA {da_id}")
+
+    except Exception as e:
+        logger.error(f"❌ notify_da: Error notifying DA: {e}")
 def send_to_client(ticket_id):
     ticket = db.get_ticket(ticket_id)
     client_name = ticket['client']
@@ -288,10 +308,16 @@ def default_handler_supervisor(update: Update, context: CallbackContext) -> int:
     reply_markup = InlineKeyboardMarkup(keyboard)
     update.message.reply_text("الرجاء اختيار خيار:", reply_markup=reply_markup)
     return MAIN_MENU
-
+def error_handler(update: Update, context: CallbackContext):
+    """Log Errors caused by Updates."""
+    logger.error(f"Update {update} caused error {context.error}")
+    if update and update.message:
+        update.message.reply_text("⚠️ حدث خطأ أثناء معالجة الطلب. الرجاء المحاولة مرة أخرى.")
 def main():
     updater = Updater(config.SUPERVISOR_BOT_TOKEN, use_context=True)
+    
     dp = updater.dispatcher
+    dp.add_error_handler(error_handler)
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={

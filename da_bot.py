@@ -354,38 +354,57 @@ def new_issue_description(update: Update, context: CallbackContext) -> int:
     return NEW_ISSUE_REASON
 
 
+from telegram import ReplyKeyboardMarkup
+
 def wait_image(update: Update, context: CallbackContext) -> int:
-    if update.message.photo:
-        try:
+    """Handles receiving an image and uploads it to Cloudinary."""
+    try:
+        # ✅ Handling Photos Only
+        if update.message.photo:
             photo = update.message.photo[-1]
             file = photo.get_file()
             bio = BytesIO()
             file.download(out=bio)
             bio.seek(0)
 
-            # ✅ Add Retry for Cloudinary Upload
+            # ✅ Upload to Cloudinary with Retry (3 attempts)
             retry_count = 3
             for attempt in range(retry_count):
                 try:
                     result = cloudinary.uploader.upload(bio)
-                    secure_url = result.get('secure_url')
+                    secure_url = result.get("secure_url")
                     if secure_url:
-                        context.user_data['image'] = secure_url
+                        context.user_data["image"] = secure_url
+                        logger.debug(f"✅ Image uploaded successfully: {secure_url}")
                         return show_ticket_summary_for_edit(update.message, context)
                 except Exception as e:
-                    logger.error(f"Cloudinary upload failed (Attempt {attempt + 1}/{retry_count}): {e}")
+                    logger.error(f"⚠️ Cloudinary upload failed (Attempt {attempt + 1}/{retry_count}): {e}")
                     time.sleep(2)  # Wait before retrying
 
             update.message.reply_text("⚠️ فشل رفع الصورة بعد عدة محاولات. حاول مرة أخرى.")
             return WAIT_IMAGE
-        except Exception as e:
-            logger.error(f"Error uploading image: {e}")
-            update.message.reply_text("⚠️ حدث خطأ أثناء رفع الصورة. حاول مرة أخرى.")
+
+        # ❌ Handling Non-Image Files
+        elif update.message.document:
+            update.message.reply_text(
+                "⚠️ الملف المرفق ليس صورة. الرجاء إرسال صورة صالحة.\n\n"
+                "إذا كنت لا تريد إضافة صورة، اضغط على 'إلغاء'.",
+                reply_markup=ReplyKeyboardMarkup([["❌ إلغاء"]], one_time_keyboard=True, resize_keyboard=True)
+            )
             return WAIT_IMAGE
-    else:
-        update.message.reply_text("⚠️ لم يتم إرسال صورة صحيحة. أعد الإرسال:")
+        
+        # ❌ No Image Sent
+        else:
+            update.message.reply_text(
+                "⚠️ لم يتم إرسال صورة.\nالرجاء إرسال صورة للمشكلة، أو اضغط على 'إلغاء' إذا كنت لا تريد إضافة صورة.",
+                reply_markup=ReplyKeyboardMarkup([["❌ إلغاء"]], one_time_keyboard=True, resize_keyboard=True)
+            )
+            return WAIT_IMAGE
+
+    except Exception as e:
+        logger.error(f"❌ Error in wait_image(): {e}", exc_info=True)
+        update.message.reply_text("⚠️ حدث خطأ أثناء معالجة الصورة. حاول مرة أخرى.")
         return WAIT_IMAGE
-    
 def show_ticket_summary_for_edit(source, context: CallbackContext):
     if hasattr(source, 'edit_message_text'):
         msg_func = source.edit_message_text
@@ -621,7 +640,10 @@ def da_awaiting_response_handler(update: Update, context: CallbackContext) -> in
     if not ticket_id:
         update.message.reply_text("حدث خطأ. أعد المحاولة.")
         return MAIN_MENU
-    db.update_ticket_status(ticket_id, "Additional Info Provided", {"action": "da_moreinfo", "message": additional_info})
+    if db.update_ticket_status(ticket_id, "Additional Info Provided", {"action": "da_moreinfo", "message": additional_info}):
+        update.message.reply_text("تم إرسال المعلومات الإضافية. شكراً لك.")
+    else:
+        update.message.reply_text("⚠️ حدث خطأ أثناء تحديث التذكرة. حاول مرة أخرى لاحقاً.")
     logger.debug("da_awaiting_response_handler: Updated ticket status for ticket_id=%s", ticket_id)
     notify_supervisors_da_moreinfo(ticket_id, additional_info)
     update.message.reply_text("تم إرسال المعلومات الإضافية. شكراً لك.")
@@ -650,36 +672,45 @@ def da_callback_handler(update: Update, context: CallbackContext) -> int:  # Cha
         safe_edit_message(query, text="الإجراء غير معروف.")
         return MAIN_MENU
 
-def da_moreinfo_callback_handler(update: Update, context: CallbackContext) -> int:  # Changed from ContextTypes.DEFAULT_TYPE
+def da_moreinfo_callback_handler(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    query.answer()  # Fixed indentation
+    query.answer()
     data = query.data
+
     try:
         ticket_id = int(data.split("|")[1])
-    except (IndexError, ValueError):
-        safe_edit_message(query, text="خطأ في بيانات التذكرة.")
-        return MAIN_MENU
-    context.user_data['ticket_id'] = ticket_id
-    logger.debug("da_moreinfo_callback_handler: Stored ticket_id=%s", ticket_id)
-    prompt_da_for_more_info(ticket_id, query.message.chat.id, context)
-    return MORE_INFO_PROMPT
+        context.user_data['ticket_id'] = ticket_id
+        logger.debug(f"✅ da_moreinfo_callback_handler: Stored ticket_id={ticket_id}")
 
+        prompt_da_for_more_info(ticket_id, query.message.chat.id, context)
+        return MORE_INFO_PROMPT
+
+    except (IndexError, ValueError):
+        logger.error(f"❌ da_moreinfo_callback_handler: Error parsing ticket ID from data: {data}")
+        safe_edit_message(query, text="❌ خطأ في بيانات التذكرة.")
+        return MAIN_MENU
 def prompt_da_for_more_info(ticket_id: int, chat_id: int, context: CallbackContext):
     ticket = db.get_ticket(ticket_id)
     if not ticket:
-        logger.error("prompt_da_for_more_info: Ticket %s not found", ticket_id)
-        context.bot.send_message(chat_id=chat_id, text="خطأ: التذكرة غير موجودة.")
+        logger.error(f"❌ prompt_da_for_more_info: Ticket {ticket_id} not found")
+        context.bot.send_message(chat_id=chat_id, text="⚠️ خطأ: التذكرة غير موجودة.")
         return
-    text = (
-        f"<b>التذكرة #{ticket_id}</b>\n"
-        f"رقم الطلب: {ticket['order_id']}\n"
-        f"الوصف: {ticket['issue_description']}\n"
-        f"الحالة: {ticket['status']}\n\n"
-        "يرجى إدخال المعلومات الإضافية المطلوبة للتذكرة:"
-    )
-    logger.debug("prompt_da_for_more_info: Prompting DA in chat %s for ticket %s", chat_id, ticket_id)
-    context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=ForceReply(selective=True))
 
+    text = (
+        f"📌 <b>التذكرة #{ticket_id}</b>\n"
+        f"📦 رقم الطلب: {ticket['order_id']}\n"
+        f"📝 الوصف: {ticket['issue_description']}\n"
+        f"📢 الحالة: {ticket['status']}\n\n"
+        "💬 يرجى إدخال المعلومات الإضافية المطلوبة للتذكرة:"
+    )
+
+    logger.debug(f"✅ prompt_da_for_more_info: Sending request to DA for ticket {ticket_id} (Chat ID: {chat_id})")
+
+    try:
+        context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=ForceReply(selective=True))
+        logger.info(f"✅ Sent request for additional info to DA (Chat ID: {chat_id})")
+    except Exception as e:
+        logger.error(f"❌ Error sending info request to DA: {e}")
 def notify_supervisors_da_moreinfo(ticket_id: int, additional_info: str):
     ticket = db.get_ticket(ticket_id)
     if not ticket:
@@ -756,7 +787,8 @@ def main():
                 ],
                 WAIT_IMAGE: [
                     MessageHandler(Filters.photo, wait_image),
-                    MessageHandler(Filters.text & ~Filters.command, lambda u, c: u.message.reply_text("يرجى إرسال صورة."))
+                    MessageHandler(Filters.text("❌ إلغاء"), lambda update, context: show_ticket_summary_for_edit(update.message, context)),
+                    MessageHandler(Filters.text & ~Filters.command, lambda u, c: u.message.reply_text("⚠️ يرجى إرسال صورة أو الضغط على 'إلغاء'."))
                 ],
                 EDIT_PROMPT: [
                     CallbackQueryHandler(edit_ticket_prompt_callback, pattern='^edit_ticket_')
