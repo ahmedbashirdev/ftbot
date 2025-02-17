@@ -224,15 +224,16 @@ def get_tickets_by_user(user_id):
         ).fetchall()
     
     return [dict(row._mapping) for row in result] if result else []
+# db.py
+
 def search_tickets_by_order(order_id):
-    """Retrieve tickets based on order ID."""
-    with get_connection() as conn:
+    with engine.connect() as conn:
         result = conn.execute(
-            text("SELECT * FROM tickets WHERE order_id LIKE :order_id"),
-            {"order_id": f"%{order_id}%"}
-        ).fetchall()
-    
-    return [dict(row._mapping) for row in result] if result else []
+            text("SELECT * FROM tickets WHERE order_id = :order_id"),
+            {"order_id": order_id}
+        )
+        tickets = result.fetchall()
+    return [dict(ticket) for ticket in tickets]
 def get_ticket(ticket_id):
     """Retrieve a single ticket by its ID."""
     with get_connection() as conn:

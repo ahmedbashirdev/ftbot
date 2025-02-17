@@ -47,6 +47,12 @@ logger = logging.getLogger(__name__)
  NEW_ISSUE_REASON, NEW_ISSUE_TYPE, ASK_IMAGE, WAIT_IMAGE,
  AWAITING_DA_RESPONSE, EDIT_PROMPT, EDIT_FIELD, MORE_INFO_PROMPT) = range(12)
 
+
+STATUS_ACTIONS = {
+    'Pending DA Action': {'label': 'Close Ticket', 'callback': 'close_ticket'},
+    'Pending DA Response': {'label': 'Provide More Information', 'callback': 'provide_info'},
+    # Add more statuses and actions as needed
+}
 # =============================================================================
 # Local mapping for issue reasons to types
 # =============================================================================
@@ -58,6 +64,37 @@ ISSUE_OPTIONS = {
     "العميل": ["رفض الاستلام", "مغلق", "عطل بالسيستم", "لا يوجد مساحة للتخزين", "شك عميل فى سلامة العبوه"],
     "التسليم": ["وصول متاخر", "تالف", "عطل بالسياره"]
 }
+
+# da_bot.py
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+# da_bot.py
+
+from telegram.ext import CallbackQueryHandler
+
+def handle_callback_query(update, context):
+    query = update.callback_query
+    data = query.data.split('|')
+    action = data[0]
+    ticket_id = data[1]
+
+    if action == 'close_ticket':
+        # Logic to close the ticket
+        db.close_ticket(ticket_id)  # Implement this function in your db module
+        query.edit_message_text(text=f"تم إغلاق التذكرة #{ticket_id}.")
+    elif action == 'provide_info':
+        # Logic to prompt DA to provide more information
+        query.edit_message_text(text=f"يرجى تقديم معلومات إضافية للتذكرة #{ticket_id}.")
+    # Add more handlers as needed
+
+# Add the handler to the dispatcher
+dispatcher.add_handler(CallbackQueryHandler(handle_callback_query))
+def generate_ticket_buttons(ticket_status):
+    action = STATUS_ACTIONS.get(ticket_status)
+    if action:
+        keyboard = [[InlineKeyboardButton(action['label'], callback_data=action['callback'])]]
+        return InlineKeyboardMarkup(keyboard)
+    return None
 
 def get_issue_types_for_reason(reason):
     """Return the list of issue types for the given reason."""
@@ -242,104 +279,31 @@ def send_full_issue_details_to_client(query, ticket_id):
         logger.error(f"Error sending issue details: {e}")
         safe_edit_message(query, text="حدث خطأ أثناء إرسال تفاصيل المشكلة.")
 
-def da_main_menu_callback(update: Update, context: CallbackContext) -> int:
-    query = update.callback_query
-    query.answer()
-    data = query.data
-    logger.debug(f"da_main_menu_callback: Received callback data: {data}")  # ✅ Debug log
-    logger.debug(f"Raw callback query: {query}")  # ✅ Debug log
-    
-    if data == "menu_add_issue":
-        # Start the fetch_orders flow when adding a new issue
-        return fetch_orders(query, context)
-    elif data == "menu_query_issue":
-        # Get user's tickets
-        user = query.from_user
-        tickets = db.get_tickets_by_user(user.id)
-        
-        status_mapping = {
-            "Opened": "مفتوحة",
-            "Pending DA Action": "في انتظار إجراء الوكيل",
-            "Awaiting Client Response": "في انتظار رد العميل",
-            "Client Responded": "تم رد العميل",
-            "Client Ignored": "تم تجاهل العميل",
-            "Closed": "مغلقة",
-            "Additional Info Provided": "تم توفير معلومات إضافية",
-            "Pending DA Response": "في انتظار رد الوكيل"
-        }
-        
-        if tickets:
-            for ticket in tickets:
-                status_ar = status_mapping.get(ticket['status'], ticket['status'])
-                resolution = ""
-                if ticket['status'] == "Closed":
-                    resolution = "\nالحل: تم الحل."
-                text = (f"<b>تذكرة #{ticket['ticket_id']}</b>\n"
-                       f"رقم الطلب: {ticket['order_id']}\n"
-                       f"الوصف: {ticket['issue_description']}\n"
-                       f"سبب المشكلة: {ticket['issue_reason']}\n"
-                       f"نوع المشكلة: {ticket['issue_type']}\n"
-                       f"الحالة: {status_ar}{resolution}")
-                query.message.reply_text(text, parse_mode="HTML")
-        else:
-            safe_edit_message(query, text="لا توجد تذاكر.")
-        return MAIN_MENU
-        
-    # Handle order selection
-    elif data.startswith("select_order|"):
-        parts = data.split("|")
-        if len(parts) < 3:
-            safe_edit_message(query, text="بيانات الطلب غير صحيحة.")
-            return MAIN_MENU
-        order_id = parts[1]
-        client_name = parts[2]
-        context.user_data['order_id'] = order_id
-        context.user_data['client'] = client_name
-        safe_edit_message(query, text=f"تم اختيار الطلب رقم {order_id} للعميل {client_name}.\nالآن، صف المشكلة التي تواجهها:")
-        return NEW_ISSUE_DESCRIPTION
-        
-    # Handle issue reason selection
-    elif data.startswith("issue_reason_"):
-        reason = data.split("_", 2)[2]
-        context.user_data['issue_reason'] = reason
-        types = get_issue_types_for_reason(reason)
-        keyboard = [[InlineKeyboardButton(t, callback_data="issue_type_" + t)] for t in types]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        safe_edit_message(query, text="اختر نوع المشكلة:", reply_markup=reply_markup)
-        return NEW_ISSUE_TYPE
-        
-    # Handle issue type selection
-    elif data.startswith("issue_type_"):
-        issue_type = urllib.parse.unquote(data.split("_", 2)[2])
-        context.user_data['issue_type'] = issue_type
-        keyboard = [
-            [InlineKeyboardButton("نعم", callback_data="attach_yes"),
-             InlineKeyboardButton("لا", callback_data="attach_no")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        safe_edit_message(query, text="هل تريد إرفاق صورة للمشكلة؟", reply_markup=reply_markup)
-        return ASK_IMAGE
-        
-    # Handle image attachment choice
-    elif data in ["attach_yes", "attach_no"]:
-        if data == "attach_yes":
-            safe_edit_message(query, text="يرجى إرسال الصورة:")
-            return WAIT_IMAGE
-        else:
-            return show_ticket_summary_for_edit(query, context)
-            
-    # Handle additional info request
-    elif data.startswith("da_moreinfo|"):
-        return da_moreinfo_callback_handler(update, context)
-        
-    # Handle ticket editing
-    elif data.startswith("edit_ticket_") or data.startswith("edit_field_"):
-        return edit_ticket_prompt_callback(update, context)
-        
-    else:
-        safe_edit_message(query, text="الخيار غير معروف.")
-        return MAIN_MENU
+# da_bot.py
 
+def da_main_menu_callback(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    # Fetch tickets from the database
+    tickets = db.get_tickets_for_da(user_id)  # Ensure this function retrieves tickets relevant to the DA
+
+    if not tickets:
+        query.edit_message_text(text="لا توجد تذاكر متاحة.")
+        return
+
+    for ticket in tickets:
+        ticket_id = ticket['id']
+        ticket_status = ticket['status']
+        ticket_description = ticket['description']
+        reply_markup = generate_ticket_buttons(ticket_status, ticket_id)
+
+        # Send the ticket information with the corresponding buttons
+        context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"تذكرة #{ticket_id}\nالوصف: {ticket_description}\nالحالة: {ticket_status}",
+            reply_markup=reply_markup
+        )
 def new_issue_description(update: Update, context: CallbackContext) -> int:
     description = update.message.text.strip()
     context.user_data['description'] = description
