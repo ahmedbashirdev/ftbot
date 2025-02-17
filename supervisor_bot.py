@@ -433,6 +433,9 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
+            SUBSCRIPTION_PHONE: [
+                MessageHandler(Filters.text & ~Filters.command, subscription_phone)
+            ],
             WAITING_FOR_ACTION: [
                 CallbackQueryHandler(search_order_callback, pattern="^search_order|"),
                 CallbackQueryHandler(view_ticket_callback, pattern="^view_ticket|"),

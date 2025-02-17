@@ -100,13 +100,21 @@ def client_main_menu_callback(update: Update, context: CallbackContext) -> int:
         return MAIN_MENU
 def send_issue_details_to_client(query, ticket_id):
     ticket = db.get_ticket(ticket_id)
-
+    logs = ""
+    if ticket.get("logs"):
+        try:
+            logs_list = json.loads(ticket["logs"])
+            logs = "\n".join([f"{entry.get('timestamp', '')}: {entry.get('action', '')} – {entry.get('message', '')}" for entry in logs_list])
+        except Exception:
+            logs = "لا توجد سجلات إضافية."
+        
     text = (f"<b>تفاصيل التذكرة:</b>\n"
             f"🔹 <b>رقم الطلب:</b> {ticket['order_id']}\n"
             f"🔹 <b>الوصف:</b> {ticket['issue_description']}\n"
             f"🔹 <b>سبب المشكلة:</b> {ticket['issue_reason']}\n"
             f"🔹 <b>نوع المشكلة:</b> {ticket['issue_type']}\n"
-            f"🔹 <b>الحالة:</b> {ticket['status']}")
+            f"🔹 <b>الحالة:</b> {ticket['status']}"
+            f"📝 <b>السجلات:</b>\n{logs}")
 
     keyboard = [
             [InlineKeyboardButton("عرض التفاصيل", callback_data=f"notify_pref|{ticket_id}|now")],
@@ -125,10 +133,18 @@ def send_issue_details_to_client(query, ticket_id):
         query.message.edit_text(text=text, reply_markup=reply_markup, parse_mode="HTML")
 def send_full_issue_details_to_client(query, ticket_id):
     ticket = db.get_ticket(ticket_id)
+    logs = ""
+    if ticket.get("logs"):
+        try:
+            logs_list = json.loads(ticket["logs"])
+            logs = "\n".join([f"{entry.get('timestamp', '')}: {entry.get('action', '')} – {entry.get('message', '')}" for entry in logs_list])
+        except Exception:
+            logs = "لا توجد سجلات إضافية."
     text = (f"<b>تفاصيل التذكرة الكاملة:</b>\n"
             f"رقم الطلب: {ticket['order_id']}\n"
             f"الوصف: {ticket['issue_description']}\n"
-            f"الحالة: {ticket['status']}")
+            f"الحالة: {ticket['status']}"
+            f"📝 <b>السجلات:</b>\n{logs}")
     keyboard = [
         [InlineKeyboardButton("حل المشكلة", callback_data=f"solve|{ticket_id}")],
         [InlineKeyboardButton("تجاهل", callback_data=f"ignore|{ticket_id}")]
