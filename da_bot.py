@@ -757,24 +757,24 @@ def da_callback_handler(update: Update, context: CallbackContext) -> int:  # Cha
 
 def da_moreinfo_callback_handler(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    # Immediately inform the user
-    query.answer(text="جارٍ التحميل...")  
+    query.answer(text="جارٍ التحميل...")  # Immediately inform the user
     try:
         ticket_id = int(query.data.split("|")[1])
         context.user_data['ticket_id'] = ticket_id
-        # Now prompt DA to provide additional info. 
-        # Remove any extra text (like "تم ارسال الطلب") from the edited message.
-        prompt_da_for_more_info(ticket_id, query.message.chat.id, context)
-        # Return the appropriate state so that the conversation waits for DA's response.
-        return AWAITING_RESPONSE  # or AWAITING_DA_RESPONSE (if you alias them)
+        logger.debug(f"✅ da_moreinfo_callback_handler: Stored ticket_id={ticket_id}")
+        
+        # Send a new prompt message (instead of editing the original message)
+        context.bot.send_message(
+            chat_id=query.message.chat.id,
+            text="💬 يرجى إدخال المعلومات الإضافية المطلوبة للتذكرة:",
+            reply_markup=ForceReply(selective=True)
+        )
+        # Return the state that will capture the DA’s reply (here we use AWAITING_RESPONSE)
+        return AWAITING_RESPONSE
     except (IndexError, ValueError) as e:
-        logger.error(f"❌ da_moreinfo_callback_handler: Error parsing ticket ID: {e}")
-        query.edit_message_text(text="❌ خطأ في بيانات التذكرة.")
+        logger.error(f"❌ da_moreinfo_callback_handler: Error parsing ticket ID from data: {query.data} ({e})")
+        safe_edit_message(query, text="❌ خطأ في بيانات التذكرة.")
         return ConversationHandler.END
-dispatcher.add_handler(
-    CallbackQueryHandler(da_moreinfo_callback_handler, pattern="^da_moreinfo\\|"),
-    group=-1
-)# Now dispatcher is defined
 def prompt_da_for_more_info(ticket_id: int, chat_id: int, context: CallbackContext):
     ticket = db.get_ticket(ticket_id)
     if not ticket:
@@ -835,6 +835,7 @@ def default_handler_da_edit(update: Update, context: CallbackContext) -> int:
 # =============================================================================
 def main():
     """Start the DA bot."""
+    
     if not config.DA_BOT_TOKEN:
         logger.error("Bot token not found!")
         return
@@ -844,7 +845,9 @@ def main():
         logger.info("Bot connected successfully")
         dp = updater.dispatcher
         dp.add_handler(CommandHandler('test', test_command))
-        
+        dispatcher.add_handler(
+            CallbackQueryHandler(da_moreinfo_callback_handler, pattern=r"^da_moreinfo\|", group=-1)
+        )
         # Complete conversation handler with all states
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('start', start)],
