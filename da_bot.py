@@ -719,17 +719,16 @@ def finalize_ticket_da(source, context, image_url):
 def da_awaiting_response_handler(update: Update, context: CallbackContext) -> int:
     additional_info = update.message.text.strip()
     ticket_id = context.user_data.get('ticket_id')
-    logger.debug("da_awaiting_response_handler: Received additional_info='%s' for ticket_id=%s", additional_info, ticket_id)
     if not ticket_id:
         update.message.reply_text("حدث خطأ. أعد المحاولة.")
         return MAIN_MENU
+    # Update ticket status and append the extra info log
     if db.update_ticket_status(ticket_id, "Additional Info Provided", {"action": "da_moreinfo", "message": additional_info}):
         update.message.reply_text("تم إرسال المعلومات الإضافية. شكراً لك.")
     else:
         update.message.reply_text("⚠️ حدث خطأ أثناء تحديث التذكرة. حاول مرة أخرى لاحقاً.")
-    logger.debug("da_awaiting_response_handler: Updated ticket status for ticket_id=%s", ticket_id)
     notify_supervisors_da_moreinfo(ticket_id, additional_info)
-    update.message.reply_text("تم إرسال المعلومات الإضافية. شكراً لك.")
+    return MAIN_MENU
 
 def da_callback_handler(update: Update, context: CallbackContext) -> int:  # Changed from async def and ContextTypes.DEFAULT_TYPE
     query = update.callback_query
@@ -757,24 +756,26 @@ def da_callback_handler(update: Update, context: CallbackContext) -> int:  # Cha
 
 def da_moreinfo_callback_handler(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    query.answer(text="جارٍ التحميل...")  # Immediately inform the user
+    # Immediately answer the callback so the user sees "جارٍ التحميل..."
+    query.answer(text="جارٍ التحميل...")
     try:
         ticket_id = int(query.data.split("|")[1])
-        context.user_data['ticket_id'] = ticket_id
-        logger.debug(f"✅ da_moreinfo_callback_handler: Stored ticket_id={ticket_id}")
-        
-        # Send a new prompt message (instead of editing the original message)
-        context.bot.send_message(
-            chat_id=query.message.chat.id,
-            text="💬 يرجى إدخال المعلومات الإضافية المطلوبة للتذكرة:",
-            reply_markup=ForceReply(selective=True)
-        )
-        # Return the state that will capture the DA’s reply (here we use AWAITING_RESPONSE)
-        return AWAITING_RESPONSE
-    except (IndexError, ValueError) as e:
-        logger.error(f"❌ da_moreinfo_callback_handler: Error parsing ticket ID from data: {query.data} ({e})")
-        safe_edit_message(query, text="❌ خطأ في بيانات التذكرة.")
+    except (IndexError, ValueError):
+        query.edit_message_text(text="❌ خطأ في بيانات التذكرة.")
         return ConversationHandler.END
+
+    # Store the ticket id for later processing
+    context.user_data['ticket_id'] = ticket_id
+
+    # Send the ForceReply prompt
+    context.bot.send_message(
+        chat_id=query.from_user.id,
+        text="يرجى إدخال المعلومات الإضافية للتذكرة:",
+        reply_markup=ForceReply(selective=True)
+    )
+    # End the conversation so that the global MessageHandler (set above) will handle the reply.
+    return ConversationHandler.END
+dispatcher.add_handler(MessageHandler(Filters.reply & Filters.text, da_awaiting_response_handler))
 def prompt_da_for_more_info(ticket_id: int, chat_id: int, context: CallbackContext):
     ticket = db.get_ticket(ticket_id)
     if not ticket:
@@ -830,6 +831,7 @@ def default_handler_da_edit(update: Update, context: CallbackContext) -> int:
     update.message.reply_text("الرجاء إدخال القيمة المطلوبة أو اختر من الخيارات المتاحة.")
     return EDIT_FIELD
 
+
 # =============================================================================
 # Main function
 # =============================================================================
@@ -845,9 +847,7 @@ def main():
         logger.info("Bot connected successfully")
         dp = updater.dispatcher
         dp.add_handler(CommandHandler('test', test_command))
-        dispatcher.add_handler(
-            CallbackQueryHandler(da_moreinfo_callback_handler, pattern=r"^da_moreinfo\|", group=-1)
-        )
+        
         # Complete conversation handler with all states
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('start', start)],
@@ -900,7 +900,7 @@ def main():
                 ],
                 AWAITING_DA_RESPONSE: [
                     MessageHandler(Filters.text & ~Filters.command, da_awaiting_response_handler)
-                ],
+                ]
             },
             fallbacks=[
                 CommandHandler('cancel', lambda update, context: (
