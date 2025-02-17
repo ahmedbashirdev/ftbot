@@ -152,7 +152,6 @@ def send_full_issue_details_to_client(query, ticket_id):
     if ticket['image_url']:
         query.bot.send_photo(chat_id=query.message.chat_id, photo=ticket['image_url'])
     safe_edit_message(query, text=text, reply_markup=reply_markup, parse_mode="HTML")
-    safe_edit_message(query, text=text, reply_markup=reply_markup, parse_mode="HTML")
 
 def reminder_callback(context: CallbackContext):
     job = context.job

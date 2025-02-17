@@ -68,7 +68,6 @@ ISSUE_OPTIONS = {
 
 updater = Updater(token=config.DA_BOT_TOKEN, use_context=True)  # Ensure DA_BOT_TOKEN is defined in config.py
 dispatcher = updater.dispatcher  # Now dispatcher is defined
-
 def handle_callback_query(update: Update, context: CallbackContext):
     try:
         query = update.callback_query
@@ -757,7 +756,7 @@ def da_callback_handler(update: Update, context: CallbackContext) -> int:  # Cha
 
 def da_moreinfo_callback_handler(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    query.answer()
+    query.answer(text="جارٍ التحميل...") 
     data = query.data
 
     try:
@@ -772,6 +771,8 @@ def da_moreinfo_callback_handler(update: Update, context: CallbackContext) -> in
         logger.error(f"❌ da_moreinfo_callback_handler: Error parsing ticket ID from data: {data}")
         safe_edit_message(query, text="❌ خطأ في بيانات التذكرة.")
         return MAIN_MENU
+dispatcher.add_handler(CallbackQueryHandler(da_moreinfo_callback_handler, pattern="^da_moreinfo\\|"))
+
 def prompt_da_for_more_info(ticket_id: int, chat_id: int, context: CallbackContext):
     ticket = db.get_ticket(ticket_id)
     if not ticket:

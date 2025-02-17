@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 def search_order_callback(update: Update, context: CallbackContext):
     """Handles searching for tickets by order ID."""
     query = update.callback_query
-    query.answer()
+    query.answer(text="جارٍ التحميل...")  # Inform the user immediately
     order_id = query.data.split("|")[1]
 
     tickets = db.search_tickets_by_order(order_id)  # Fetch tickets from the database
@@ -336,13 +336,14 @@ def notify_da(ticket_id, message, info_request=False):
         logger.error(f"⚠️ notify_da: Ticket {ticket_id} not found")
         return
 
-    da_id = ticket.get('da_id')  # Ensure this retrieves the correct DA ID
+    da_id = ticket.get('da_id')
     if not da_id:
         logger.error(f"⚠️ notify_da: No DA assigned to ticket #{ticket_id}")
         return
 
-    bot = Bot(token=config.SUPERVISOR_BOT_TOKEN)
-
+    # Use the DA bot token instead of the supervisor token if notifying DA directly
+    bot = Bot(token=config.DA_BOT_TOKEN)
+    
     if info_request:
         text = (f"🔹 <b>طلب معلومات إضافية</b> للتذكرة #{ticket_id}\n"
                 f"📦 رقم الطلب: {ticket['order_id']}\n"
@@ -357,24 +358,26 @@ def notify_da(ticket_id, message, info_request=False):
                 f"📢 الحالة: {ticket['status']}\n\n"
                 f"📝 الحل: {message}")
         keyboard = [[InlineKeyboardButton("إغلاق التذكرة", callback_data=f"close|{ticket_id}")]]
-
+        
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
-        da_sub = db.get_subscription(da_id, "DA")  # Ensure DA exists
+        # Retrieve the DA's subscription using its da_id and bot name "DA"
+        da_sub = db.get_subscription(da_id, "DA")
         if da_sub:
             chat_id = da_sub.get('chat_id')
+            logger.debug(f"notify_da: Retrieved DA subscription: {da_sub}")
             if not chat_id:
                 logger.error(f"⚠️ notify_da: No chat_id found for DA {da_id}")
                 return
             
             bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode="HTML")
-            logger.info(f"✅ notify_da: Sent request to DA (Chat ID: {chat_id})")
+            logger.info(f"✅ notify_da: Sent notification to DA (Chat ID: {chat_id})")
         else:
             logger.error(f"⚠️ notify_da: No subscription found for DA {da_id}")
-
     except Exception as e:
         logger.error(f"❌ notify_da: Error notifying DA: {e}")
+
 def send_to_client(ticket_id):
     ticket = db.get_ticket(ticket_id)
     client_name = ticket['client']
@@ -420,6 +423,19 @@ def error_handler(update: Update, context: CallbackContext):
     logger.error(f"Update {update} caused error {context.error}")
     if update and update.message:
         update.message.reply_text("⚠️ حدث خطأ أثناء معالجة الطلب. الرجاء المحاولة مرة أخرى.")
+def back_to_tickets_callback(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    query.answer()
+    # Create the main menu keyboard (adjust as needed)
+    keyboard = [
+        [
+            InlineKeyboardButton("عرض الكل", callback_data="menu_show_all"),
+            InlineKeyboardButton("استعلام عن مشكلة", callback_data="menu_query_issue")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    safe_edit_message(query, text="الرجاء اختيار خيار:", reply_markup=reply_markup)
+    return MAIN_MENU
 def cancel(update: Update, context: CallbackContext) -> int:
     update.message.reply_text("تم إلغاء العملية.")
     return ConversationHandler.END
@@ -431,30 +447,30 @@ def main():
 
 # Define the conversation handler
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            SUBSCRIPTION_PHONE: [
-                MessageHandler(Filters.text & ~Filters.command, subscription_phone)
-            ],
-            WAITING_FOR_ACTION: [
-                CallbackQueryHandler(search_order_callback, pattern="^search_order|"),
-                CallbackQueryHandler(view_ticket_callback, pattern="^view_ticket|"),
-                CallbackQueryHandler(close_ticket_callback, pattern="^close_ticket|"),
-                CallbackQueryHandler(back_to_tickets_callback, pattern="^back_to_tickets")
-            ],
-            MAIN_MENU: [
+    entry_points=[CommandHandler("start", start)],
+    states={
+        SUBSCRIPTION_PHONE: [
+            MessageHandler(Filters.text & ~Filters.command, subscription_phone)
+        ],
+        WAITING_FOR_ACTION: [
+            CallbackQueryHandler(search_order_callback, pattern="^search_order|"),
+            CallbackQueryHandler(view_ticket_callback, pattern="^view_ticket|"),
+            CallbackQueryHandler(close_ticket_callback, pattern="^close_ticket|"),
+            CallbackQueryHandler(back_to_tickets_callback, pattern="^back_to_tickets")
+        ],
+        MAIN_MENU: [
             CallbackQueryHandler(supervisor_main_menu_callback, 
                 pattern="^(menu_show_all|menu_query_issue|view\\|.*|solve\\|.*|moreinfo\\|.*|sendclient\\|.*|sendto_da\\|.*)$")
-            ],
-            SEARCH_TICKETS: [
-                MessageHandler(Filters.text & ~Filters.command, search_tickets)
-            ],
-            AWAITING_RESPONSE: [
-                MessageHandler(Filters.text & ~Filters.command, awaiting_response_handler)
-            ]
-        },
-        fallbacks=[CommandHandler("cancel", cancel)]
-        )
+        ],
+        SEARCH_TICKETS: [
+            MessageHandler(Filters.text & ~Filters.command, search_tickets)
+        ],
+        AWAITING_RESPONSE: [
+            MessageHandler(Filters.text & ~Filters.command, awaiting_response_handler)
+        ]
+    },
+    fallbacks=[CommandHandler("cancel", cancel)]
+)
     dp.add_handler(conv_handler)
     dp.add_handler(MessageHandler(Filters.text, default_handler_supervisor))
     updater.start_polling()
