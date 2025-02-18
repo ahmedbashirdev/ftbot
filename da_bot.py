@@ -184,7 +184,7 @@ def fetch_orders(query, context):
             return MAIN_MENU
 
         agent_phone = sub['phone']
-        url = f"https://3e5440qr0c.execute-api.eu-west-3.amazonaws.com/dev/locus_info?agent_phone=01066440390&order_date=2024-11-05"
+        url = f"https://3e5440qr0c.execute-api.eu-west-3.amazonaws.com/dev/locus_info?={agent_phone}&order_date=2024-11-05"
 
         logger.debug(f"Making API request to: {url}")
         response = requests.get(url)
@@ -721,17 +721,17 @@ def da_awaiting_response_handler(update: Update, context: CallbackContext) -> in
     logger.debug("Global handler triggered for additional info reply.")
     additional_info = update.message.text.strip()
     ticket_id = context.user_data.get('ticket_id')
+    
     if not ticket_id:
         update.message.reply_text("حدث خطأ. أعد المحاولة.")
         return ConversationHandler.END
 
-    # Update the ticket status with the additional information.
     if db.update_ticket_status(ticket_id, "Additional Info Provided", {"action": "da_moreinfo", "message": additional_info}):
         update.message.reply_text("تم إرسال المعلومات الإضافية. شكراً لك.")
     else:
         update.message.reply_text("⚠️ حدث خطأ أثناء تحديث التذكرة. حاول مرة أخرى لاحقاً.")
 
-    # Notify supervisors (if this function is working as desired)
+    # Notify the supervisors with the updated info.
     notify_supervisors_da_moreinfo(ticket_id, additional_info)
 
     return ConversationHandler.END
@@ -761,7 +761,7 @@ def da_callback_handler(update: Update, context: CallbackContext) -> int:  # Cha
 
 def da_moreinfo_callback_handler(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    # Immediately answer the callback so the user sees feedback.
+    # Immediately answer the callback for feedback
     query.answer(text="جارٍ التحميل...")
     try:
         ticket_id = int(query.data.split("|")[1])
@@ -769,17 +769,15 @@ def da_moreinfo_callback_handler(update: Update, context: CallbackContext) -> in
         query.edit_message_text(text="❌ خطأ في بيانات التذكرة.")
         return ConversationHandler.END
 
-    # Store ticket id for later use.
     context.user_data['ticket_id'] = ticket_id
 
-    # Send a ForceReply prompt to the DA’s private chat.
-    # (Using selective=False to force the reply may help.)
+    # Send a ForceReply prompt directly to the DA's private chat.
     context.bot.send_message(
         chat_id=query.from_user.id,
         text="يرجى إدخال المعلومات الإضافية للتذكرة:",
         reply_markup=ForceReply(selective=False)
     )
-    # End the conversation so that the global MessageHandler can process the reply.
+    # End the conversation so that the global reply handler catches the answer.
     return ConversationHandler.END
 def prompt_da_for_more_info(ticket_id: int, chat_id: int, context: CallbackContext):
     ticket = db.get_ticket(ticket_id)
@@ -902,7 +900,10 @@ def main():
                     MessageHandler(~Filters.text & ~Filters.command, default_handler_da_edit)
                 ],
                 MORE_INFO_PROMPT: [
-                    MessageHandler(Filters.text & ~Filters.command, da_awaiting_response_handler)
+                    MessageHandler(
+                        Filters.text & ~Filters.command,
+                        da_awaiting_response_handler
+                    )
                 ],
                 AWAITING_DA_RESPONSE: [
                     MessageHandler(Filters.text & ~Filters.command, da_awaiting_response_handler)

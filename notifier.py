@@ -11,37 +11,35 @@ supervisor_bot = Bot(token=SUPERVISOR_BOT_TOKEN)
 client_bot = Bot(token=CLIENT_BOT_TOKEN)
 
 def notify_supervisors(ticket):
-    """
-    Notify all supervisors about a new ticket.
-    If the ticket includes an image, send the image with the ticket details as the caption.
-    Otherwise, send the ticket details as a text message.
-    The message is in Arabic and includes all the relevant fields.
-    """
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Bot
+    # Use the supervisor bot token
     bot = Bot(token=config.SUPERVISOR_BOT_TOKEN)
     
-    # Build the message text using the Ticket object's attributes
+    # Build the notification text (using dot notation on the Ticket object)
     text = (
-        f"🚨 تذكرة جديدة #{ticket.ticket_id} تم إنشاؤها.\n"
-        f"🔹 رقم الطلب: {ticket.order_id}\n"
-        f"🔹 الوصف: {ticket.issue_description}\n"
-        f"🔹 سبب المشكلة: {ticket.issue_reason}\n"
-        f"🔹 نوع المشكلة: {ticket.issue_type}\n"
-        f"🔹 العميل: {ticket.client}\n"
-        f"🔹 الحالة: {ticket.status}"
+        f"🚨 <b>تذكرة جديدة #{ticket.ticket_id}</b> تم إنشاؤها.\n"
+        f"🔹 <b>رقم الطلب:</b> {ticket.order_id}\n"
+        f"🔹 <b>الوصف:</b> {ticket.issue_description}\n"
+        f"🔹 <b>سبب المشكلة:</b> {ticket.issue_reason}\n"
+        f"🔹 <b>نوع المشكلة:</b> {ticket.issue_type}\n"
+        f"🔹 <b>العميل:</b> {ticket.client}\n"
+        f"🔹 <b>الحالة:</b> {ticket.status}"
     )
     
-    # Define the inline keyboard if needed (for example, to view details)
+    # Build the inline keyboard with supervisor actions
     keyboard = [
         [InlineKeyboardButton("حل المشكلة", callback_data=f"solve|{ticket.ticket_id}")],
         [InlineKeyboardButton("طلب معلومات إضافية", callback_data=f"moreinfo|{ticket.ticket_id}")],
         [InlineKeyboardButton("إرسال إلى العميل", callback_data=f"sendclient|{ticket.ticket_id}")]
     ]
-    # Optionally, if the ticket is "Client Responded", add:
+    # Optionally, if the ticket status is "Client Responded", add the extra button:
     if ticket.status == "Client Responded":
         keyboard.insert(0, [InlineKeyboardButton("إرسال للحالة إلى الوكيل", callback_data=f"sendto_da|{ticket.ticket_id}")])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    supervisors = db.get_supervisors()  # This should return a list of supervisor dicts.
+    # Retrieve all supervisors from the DB
+    supervisors = db.get_supervisors()
     for sup in supervisors:
         try:
             if ticket.image_url:
