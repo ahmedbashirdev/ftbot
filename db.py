@@ -225,7 +225,15 @@ def get_tickets_by_user(user_id):
     
     return [dict(row._mapping) for row in result] if result else []
 # db.py
-
+def get_supervisors():
+    """Retrieve all supervisor subscriptions."""
+    with get_connection() as conn:
+        result = conn.execute(
+            text("SELECT * FROM subscriptions WHERE role = :role AND bot = 'Supervisor'"),
+            {"role": "Supervisor"}
+        )
+        supervisors = result.fetchall()
+    return [dict(row._mapping) for row in supervisors] if supervisors else []
 def search_tickets_by_order(order_id):
     with engine.connect() as conn:
         result = conn.execute(
