@@ -4,37 +4,35 @@ import db
 import config
 import logging
 from config import DA_BOT_TOKEN, SUPERVISOR_BOT_TOKEN, CLIENT_BOT_TOKEN
+
 logger = logging.getLogger(__name__)
+
 # Create standalone Bot objects (used only for sending notifications)
 da_bot = Bot(token=DA_BOT_TOKEN)
 supervisor_bot = Bot(token=SUPERVISOR_BOT_TOKEN)
 client_bot = Bot(token=CLIENT_BOT_TOKEN)
 
 def notify_supervisors(ticket):
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Bot
-    # Use the supervisor bot token
     bot = Bot(token=config.SUPERVISOR_BOT_TOKEN)
     
-    # Build the notification text (using dot notation on the Ticket object)
+    # Build the notification text using dictionary keys
     text = (
-        f"🚨 <b>تذكرة جديدة #{ticket.ticket_id}</b> تم إنشاؤها.\n"
-        f"🔹 <b>رقم الطلب:</b> {ticket.order_id}\n"
-        f"🔹 <b>الوصف:</b> {ticket.issue_description}\n"
-        f"🔹 <b>سبب المشكلة:</b> {ticket.issue_reason}\n"
-        f"🔹 <b>نوع المشكلة:</b> {ticket.issue_type}\n"
-        f"🔹 <b>العميل:</b> {ticket.client}\n"
-        f"🔹 <b>الحالة:</b> {ticket.status}"
+        f"🚨 <b>تذكرة جديدة #{ticket['ticket_id']}</b> تم إنشاؤها.\n"
+        f"🔹 <b>رقم الطلب:</b> {ticket['order_id']}\n"
+        f"🔹 <b>الوصف:</b> {ticket['issue_description']}\n"
+        f"🔹 <b>سبب المشكلة:</b> {ticket['issue_reason']}\n"
+        f"🔹 <b>نوع المشكلة:</b> {ticket['issue_type']}\n"
+        f"🔹 <b>العميل:</b> {ticket['client']}\n"
+        f"🔹 <b>الحالة:</b> {ticket['status']}"
     )
     
-    # Build the inline keyboard with supervisor actions
     keyboard = [
-        [InlineKeyboardButton("حل المشكلة", callback_data=f"solve|{ticket.ticket_id}")],
-        [InlineKeyboardButton("طلب معلومات إضافية", callback_data=f"moreinfo|{ticket.ticket_id}")],
-        [InlineKeyboardButton("إرسال إلى العميل", callback_data=f"sendclient|{ticket.ticket_id}")]
+        [InlineKeyboardButton("حل المشكلة", callback_data=f"solve|{ticket['ticket_id']}")],
+        [InlineKeyboardButton("طلب معلومات إضافية", callback_data=f"moreinfo|{ticket['ticket_id']}")],
+        [InlineKeyboardButton("إرسال إلى العميل", callback_data=f"sendclient|{ticket['ticket_id']}")]
     ]
-    # Optionally, if the ticket status is "Client Responded", add the extra button:
-    if ticket.status == "Client Responded":
-        keyboard.insert(0, [InlineKeyboardButton("إرسال للحالة إلى الوكيل", callback_data=f"sendto_da|{ticket.ticket_id}")])
+    if ticket['status'] == "Client Responded":
+        keyboard.insert(0, [InlineKeyboardButton("إرسال للحالة إلى الوكيل", callback_data=f"sendto_da|{ticket['ticket_id']}")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -42,10 +40,10 @@ def notify_supervisors(ticket):
     supervisors = db.get_supervisors()
     for sup in supervisors:
         try:
-            if ticket.image_url:
+            if ticket.get("image_url"):
                 bot.send_photo(
                     chat_id=sup['chat_id'],
-                    photo=ticket.image_url,
+                    photo=ticket.get("image_url"),
                     caption=text,
                     reply_markup=reply_markup,
                     parse_mode="HTML"
@@ -59,6 +57,7 @@ def notify_supervisors(ticket):
                 )
         except Exception as e:
             logger.error(f"Error notifying supervisor {sup['chat_id']}: {e}")
+
 def notify_client(ticket):
     clients = db.get_users_by_role("client", client=ticket["client"])
     for client in clients:
@@ -79,10 +78,28 @@ def notify_client(ticket):
                 client_bot.send_message(chat_id=client["chat_id"], text=message,
                                         reply_markup=markup, parse_mode="HTML")
         except Exception as e:
-            print("Error notifying client:", e)
-
+            logger.error("Error notifying client: %s", e)
+def notify_supervisors_da_moreinfo(ticket_id: int, additional_info: str):
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        logger.error("notify_supervisors_da_moreinfo: Ticket %s not found", ticket_id)
+        return
+    bot = Bot(token=config.SUPERVISOR_BOT_TOKEN)
+    text = (
+        f"<b>معلومات إضافية من الوكيل للتذكرة #{ticket_id}</b>\n"
+        f"رقم الطلب: {ticket['order_id']}\n"
+        f"الوصف: {ticket['issue_description']}\n"
+        f"المعلومات الإضافية: {additional_info}\n"
+        f"الحالة: {ticket['status']}"
+    )
+    keyboard = [[InlineKeyboardButton("عرض التفاصيل", callback_data=f"view|{ticket_id}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    for sup in db.get_supervisors():
+        try:
+            bot.send_message(chat_id=sup['chat_id'], text=text, reply_markup=reply_markup, parse_mode="HTML")
+        except Exception as e:
+            logger.error("notify_supervisors_da_moreinfo: Error notifying supervisor %s: %s", sup['chat_id'], e)
 def notify_da(ticket):
-    # Get the DA by using the da_id field from the ticket
     da_user = db.get_user(ticket["da_id"], "da")
     if da_user:
         message = (
@@ -102,4 +119,4 @@ def notify_da(ticket):
                 da_bot.send_message(chat_id=da_user["chat_id"], text=message,
                                     reply_markup=markup, parse_mode="HTML")
         except Exception as e:
-            print("Error notifying DA:", e)
+            logger.error("Error notifying DA: %s", e)
