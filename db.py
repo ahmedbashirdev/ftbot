@@ -144,7 +144,7 @@ def add_subscription(user_id, phone, role, bot, client, username, first_name, la
                 INSERT INTO subscriptions 
                 (user_id, phone, role, bot, client, username, first_name, last_name, chat_id)
                 VALUES (:user_id, :phone, :role, :bot, :client, :username, :first_name, :last_name, :chat_id)
-                ON CONFLICT (user_id, chat_id) DO UPDATE SET 
+                ON CONFLICT (user_id, bot) DO UPDATE SET 
                     phone = EXCLUDED.phone,
                     client = EXCLUDED.client,
                     username = EXCLUDED.username,
@@ -164,7 +164,6 @@ def add_subscription(user_id, phone, role, bot, client, username, first_name, la
             }
         )
         conn.commit()
-
 def add_ticket(order_id, issue_description, issue_reason, issue_type, client, image_url, status, da_id):
     session = get_db_session()
     try:

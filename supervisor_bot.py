@@ -168,10 +168,6 @@ def supervisor_main_menu_callback(update: Update, context: CallbackContext) -> i
         except ValueError:
             safe_edit_message(query, "رقم التذكرة غير صحيح.")
             return MAIN_MENU
-        # Update ticket status to "Awaiting Client Response" before sending
-        if not db.update_ticket_status(ticket_id, "Awaiting Client Response", {"action": "supervisor_send_to_client", "message": "تم إرسال التذكرة إلى العميل"}):
-            safe_edit_message(query, text="حدث خطأ أثناء تحديث حالة التذكرة.")
-            return MAIN_MENU
         ticket = db.get_ticket(ticket_id)
         send_to_client(ticket)  # Send with the ticket’s details (using its stored issue_description)
         safe_edit_message(query, text=f"تم إرسال التذكرة #{ticket_id} إلى العميل.")
@@ -198,7 +194,7 @@ def supervisor_main_menu_callback(update: Update, context: CallbackContext) -> i
         safe_edit_message(query, text="تم إلغاء الإرسال إلى العميل.")
         return MAIN_MENU
 
-    # -- Send to DA branch --
+    # Disable sendto_da branch for now
     elif data.startswith("sendto_da|"):
         ticket_id = int(data.split("|")[1])
         ticket = db.get_ticket(ticket_id)
@@ -231,6 +227,7 @@ def send_to_client(ticket, message_text=None):
     client_name = ticket.get('client')
     clients = db.get_clients_by_name(client_name)
     bot = Bot(token=config.CLIENT_BOT_TOKEN)
+    # Use the edited text if provided; otherwise, use the stored issue description.
     description = message_text if message_text is not None else ticket['issue_description']
     message = (f"<b>تذكرة من المشرف</b>\n"
                f"تذكرة #{ticket['ticket_id']}\n"
@@ -296,35 +293,30 @@ def awaiting_response_handler(update: Update, context: CallbackContext) -> int:
     context.user_data.pop('action', None)
     return MAIN_MENU
 
-# Modified notify_da: accepts either a ticket dict or a ticket_id (integer)
-def notify_da(ticket_or_id, client_solution=None, info_request=False):
-    # If a dictionary was provided, use it; otherwise, retrieve the ticket.
-    if isinstance(ticket_or_id, dict):
-        ticket = ticket_or_id
-    else:
-        ticket = db.get_ticket(ticket_or_id)
+def notify_da(ticket_id, message, info_request=False):
+    ticket = db.get_ticket(ticket_id)
     if not ticket:
-        logger.error("notify_da: Ticket not found.")
+        logger.error(f"notify_da: Ticket {ticket_id} not found")
         return
     da_id = ticket.get('da_id')
     if not da_id:
-        logger.error(f"notify_da: No DA assigned to ticket #{ticket['ticket_id']}")
+        logger.error(f"notify_da: No DA assigned to ticket #{ticket_id}")
         return
     bot = Bot(token=config.DA_BOT_TOKEN)
     if info_request:
-        text = (f"<b>طلب معلومات إضافية للتذكرة #{ticket['ticket_id']}</b>\n"
+        text = (f"<b>طلب معلومات إضافية للتذكرة #{ticket_id}</b>\n"
                 f"رقم الطلب: {ticket['order_id']}\n"
                 f"الوصف: {ticket['issue_description']}\n"
                 f"الحالة: {ticket['status']}\n\n"
-                f"المعلومات المطلوبة: {client_solution}")
-        keyboard = [[InlineKeyboardButton("تطبيق المعلومات", callback_data=f"da_moreinfo|{ticket['ticket_id']}")]]
+                f"المعلومات المطلوبة: {message}")
+        keyboard = [[InlineKeyboardButton("تطبيق المعلومات", callback_data=f"da_moreinfo|{ticket_id}")]]
     else:
-        text = (f"<b>حل مشكلة التذكرة #{ticket['ticket_id']}</b>\n"
+        text = (f"<b>حل مشكلة التذكرة #{ticket_id}</b>\n"
                 f"رقم الطلب: {ticket['order_id']}\n"
                 f"الوصف: {ticket['issue_description']}\n"
                 f"الحالة: {ticket['status']}\n\n"
-                f"الحل: {client_solution}")
-        keyboard = [[InlineKeyboardButton("إغلاق التذكرة", callback_data=f"close|{ticket['ticket_id']}")]]
+                f"الحل: {message}")
+        keyboard = [[InlineKeyboardButton("إغلاق التذكرة", callback_data=f"close|{ticket_id}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     try:
         da_sub = db.get_subscription(ticket["da_id"], "DA")
@@ -336,7 +328,7 @@ def notify_da(ticket_or_id, client_solution=None, info_request=False):
             bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode="HTML")
             logger.info(f"Ticket {ticket['ticket_id']} sent to DA (Chat ID: {chat_id}).")
         else:
-            logger.error(f"notify_da: No subscription found for DA {da_id}")
+            logger.error(f"No subscription found for DA {da_id}")
     except Exception as e:
         logger.error("Error notifying DA: %s", e)
 
@@ -395,7 +387,7 @@ def main():
             ],
             MAIN_MENU: [
                 CallbackQueryHandler(supervisor_main_menu_callback, 
-                                     pattern="^(menu_show_all|menu_query_issue|view\\|.*|solve\\|.*|moreinfo\\|.*|sendclient\\|.*|sendto_da\\|.*|confirm_sendclient\\|.*|cancel_sendclient\\|.*|edit_sendclient\\|.*|confirm_sendto_da\\|.*|cancel_sendto_da\\|.*)$")
+                    pattern="^(menu_show_all|menu_query_issue|view\\|.*|solve\\|.*|moreinfo\\|.*|sendclient\\|.*|sendto_da\\|.*|confirm_sendclient\\|.*|cancel_sendclient\\|.*|edit_sendclient\\|.*|confirm_sendto_da\\|.*|cancel_sendto_da\\|.*)$")
             ],
             SEARCH_TICKETS: [
                 MessageHandler(Filters.text & ~Filters.command, search_tickets)
