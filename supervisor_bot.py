@@ -354,7 +354,126 @@ def supervisor_edit_details_handler(update: Update, context: CallbackContext) ->
     context.user_data.pop('ticket_id', None)
     context.user_data.pop('action', None)
     return MAIN_MENU
+def global_supervisor_action_handler(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    query.answer()
+    data = query.data
+    logger.debug("global_supervisor_action_handler: Received data: %s", data)
+    
+    # Process solve action
+    if data.startswith("solve|"):
+        try:
+            ticket_id = int(data.split("|")[1])
+        except (IndexError, ValueError):
+            safe_edit_message(query, "بيانات التذكرة غير صحيحة.")
+            return MAIN_MENU
+        context.user_data['ticket_id'] = ticket_id
+        context.user_data['action'] = 'solve'
+        context.bot.send_message(
+            chat_id=query.message.chat.id,
+            text="أدخل رسالة الحل للمشكلة:",
+            reply_markup=ForceReply(selective=True)
+        )
+        return AWAITING_RESPONSE
+    
+    # Process more info action
+    elif data.startswith("moreinfo|"):
+        try:
+            ticket_id = int(data.split("|")[1])
+        except (IndexError, ValueError):
+            safe_edit_message(query, "بيانات التذكرة غير صحيحة.")
+            return MAIN_MENU
+        context.user_data['ticket_id'] = ticket_id
+        context.user_data['action'] = 'moreinfo'
+        context.bot.send_message(
+            chat_id=query.message.chat.id,
+            text="أدخل المعلومات الإضافية المطلوبة للتذكرة:",
+            reply_markup=ForceReply(selective=True)
+        )
+        return AWAITING_RESPONSE
+    
+    # Process send to client action
+    elif data.startswith("sendclient|"):
+        try:
+            ticket_id = int(data.split("|")[1])
+        except (IndexError, ValueError):
+            safe_edit_message(query, "بيانات التذكرة غير صحيحة.")
+            return MAIN_MENU
+        ticket = db.get_ticket(ticket_id)
+        if ticket:
+            send_to_client(ticket)
+            safe_edit_message(query, text=f"تم إرسال التذكرة #{ticket_id} إلى العميل.")
+        else:
+            safe_edit_message(query, text="التذكرة غير موجودة.")
+        return MAIN_MENU
 
+    # Process send to DA action
+    elif data.startswith("sendto_da|"):
+        try:
+            ticket_id = int(data.split("|")[1])
+        except (IndexError, ValueError):
+            safe_edit_message(query, "بيانات التذكرة غير صحيحة.")
+            return MAIN_MENU
+        ticket = db.get_ticket(ticket_id)
+        if ticket:
+            client_solution = None
+            if ticket.get("logs"):
+                try:
+                    logs = json.loads(ticket["logs"])
+                    for log in logs:
+                        if log.get("action") == "client_solution":
+                            client_solution = log.get("message")
+                            break
+                except Exception:
+                    client_solution = None
+            if not client_solution:
+                client_solution = "لا يوجد حل من العميل."
+            db.update_ticket_status(ticket_id, "Pending DA Action", {"action": "supervisor_forward", "message": client_solution})
+            notify_da(ticket, client_solution, info_request=False)
+            safe_edit_message(query, text="تم إرسال الحالة إلى الوكيل.")
+        else:
+            safe_edit_message(query, text="التذكرة غير موجودة.")
+        return MAIN_MENU
+
+    return MAIN_MENU
+# In your main() function for the supervisor bot, add this handler:
+def global_supervisor_text_handler(update: Update, context: CallbackContext) -> None:
+    # Check if a "solve" action is pending
+    if context.user_data.get('action') == 'solve' and context.user_data.get('ticket_id'):
+        solution = update.message.text.strip()
+        ticket_id = context.user_data['ticket_id']
+        # Update ticket status and add the supervisor's solution to the logs.
+        success = db.update_ticket_status(ticket_id, "Pending DA Action", {"action": "supervisor_solution", "message": solution})
+        if success:
+            # Notify the DA (using your notify_da function)
+            ticket = db.get_ticket(ticket_id)
+            notify_da(ticket)
+            update.message.reply_text("تم إرسال الحل إلى الوكيل.")
+        else:
+            update.message.reply_text("حدث خطأ أثناء تحديث التذكرة.")
+        # Clear the stored action data
+        context.user_data.pop('ticket_id', None)
+        context.user_data.pop('action', None)
+        return
+
+    # Check if a "moreinfo" action is pending
+    elif context.user_data.get('action') == 'moreinfo' and context.user_data.get('ticket_id'):
+        info = update.message.text.strip()
+        ticket_id = context.user_data['ticket_id']
+        success = db.update_ticket_status(ticket_id, "Awaiting DA Response", {"action": "supervisor_moreinfo", "message": info})
+        if success:
+            ticket = db.get_ticket(ticket_id)
+            notify_da(ticket)
+            update.message.reply_text("تم إرسال المعلومات الإضافية إلى الوكيل.")
+        else:
+            update.message.reply_text("حدث خطأ أثناء تحديث التذكرة.")
+        context.user_data.pop('ticket_id', None)
+        context.user_data.pop('action', None)
+        return
+
+    else:
+        # Fallback if no pending action: simply show the main menu.
+        update.message.reply_text("الرجاء اختيار خيار من القائمة.")
 def default_handler_supervisor(update: Update, context: CallbackContext) -> int:
     keyboard = [
         [InlineKeyboardButton("عرض الكل", callback_data="menu_show_all"),
@@ -407,6 +526,9 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)]
     )
     dp.add_handler(conv_handler)
+    dp.add_handler(CallbackQueryHandler(global_supervisor_action_handler, 
+    pattern="^(solve\\|.*|moreinfo\\|.*|sendclient\\|.*|sendto_da\\|.*)$"))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, global_supervisor_text_handler))
     dp.add_handler(MessageHandler(Filters.text, default_handler_supervisor))
     dp.add_handler(CallbackQueryHandler(supervisor_main_menu_callback, pattern="^sendclient\\|.*$"))
     updater.start_polling()

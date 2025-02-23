@@ -379,7 +379,8 @@ def da_awaiting_response_handler(update: Update, context: CallbackContext) -> in
     if not additional_info:
         update.message.reply_text("الرجاء إدخال معلومات إضافية.")
         return MAIN_MENU
-    success = db.update_ticket_status(ticket_id, "Awaiting Supervisor Decision", 
+    # Change the status to a distinct value for additional info, for example:
+    success = db.update_ticket_status(ticket_id, "Additional Info Provided", 
                                       {"action": "da_moreinfo", "message": additional_info})
     if not success:
         update.message.reply_text("حدث خطأ أثناء تحديث التذكرة.")
@@ -396,7 +397,6 @@ def da_awaiting_response_handler(update: Update, context: CallbackContext) -> in
     context.user_data.pop('ticket_id', None)
     context.user_data.pop('action', None)
     return MAIN_MENU
-
 def da_callback_handler(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     query.answer()

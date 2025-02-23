@@ -1,4 +1,3 @@
-# notifier.py
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 import db
 import config
@@ -15,7 +14,6 @@ client_bot = Bot(token=CLIENT_BOT_TOKEN)
 def notify_supervisors(ticket):
     bot = Bot(token=config.SUPERVISOR_BOT_TOKEN)
     
-    # Build the notification text using dictionary keys
     text = (
         f"🚨 <b>تذكرة جديدة #{ticket['ticket_id']}</b> تم إنشاؤها.\n"
         f"🔹 <b>رقم الطلب:</b> {ticket['order_id']}\n"
@@ -36,7 +34,6 @@ def notify_supervisors(ticket):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Retrieve all supervisors from the DB
     supervisors = db.get_supervisors()
     for sup in supervisors:
         try:
@@ -71,7 +68,7 @@ def notify_client(ticket):
         ]
         markup = InlineKeyboardMarkup(buttons)
         try:
-            if ticket['image_url']:
+            if ticket.get('image_url'):
                 client_bot.send_photo(chat_id=client["chat_id"], photo=ticket['image_url'],
                                         caption=message, reply_markup=markup, parse_mode="HTML")
             else:
@@ -79,6 +76,7 @@ def notify_client(ticket):
                                         reply_markup=markup, parse_mode="HTML")
         except Exception as e:
             logger.error("Error notifying client: %s", e)
+
 def notify_supervisors_da_moreinfo(ticket_id: int, additional_info: str):
     ticket = db.get_ticket(ticket_id)
     if not ticket:
@@ -110,20 +108,59 @@ def notify_supervisors_da_moreinfo(ticket_id: int, additional_info: str):
             bot.send_message(chat_id=sup_chat, text=text, reply_markup=reply_markup, parse_mode="HTML")
         except Exception as e:
             logger.error("notify_supervisors_da_moreinfo: Error notifying supervisor %s: %s", sup.get('chat_id'), e)
-def notify_da(ticket):
+
+def notify_da_moreinfo(ticket_id: int, additional_info: str):
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        logger.error("notify_da_moreinfo: Ticket %s not found", ticket_id)
+        return
+    bot = Bot(token=config.DA_BOT_TOKEN)
+    text = (
+        f"<b>طلب معلومات إضافية للتذكرة #{ticket_id}</b>\n"
+        f"رقم الطلب: {ticket['order_id']}\n"
+        f"الوصف: {ticket['issue_description']}\n"
+        f"المعلومات المطلوبة: {additional_info}\n"
+        f"الحالة: {ticket['status']}"
+    )
+    keyboard = [[InlineKeyboardButton("تطبيق المعلومات", callback_data=f"da_moreinfo|{ticket_id}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    da_user = db.get_user(ticket["da_id"], "da")
+    if not da_user:
+        logger.error("notify_da_moreinfo: No DA subscription found for ticket %s", ticket_id)
+        return
+    try:
+        bot.send_message(chat_id=da_user["chat_id"], text=text, reply_markup=reply_markup, parse_mode="HTML")
+        logger.info(f"Ticket {ticket_id} additional info sent to DA (Chat ID: {da_user['chat_id']}).")
+    except Exception as e:
+        logger.error("notify_da_moreinfo: Error notifying DA: %s", e)
+
+def notify_da(ticket, client_solution=None, info_request=False):
     da_user = db.get_user(ticket["da_id"], "da")
     if da_user:
-        message = (
-            f"تم تحديث بلاغك رقم {ticket['ticket_id']}.\n"
-            f"الوصف: {ticket['issue_description']}\n"
-            f"الحالة: {ticket['status']}"
-        )
-        buttons = [
-            [InlineKeyboardButton("عرض التفاصيل", callback_data=f"da_view|{ticket['ticket_id']}")]
-        ]
+        if not info_request:
+            message = (
+                f"تم تحديث بلاغك رقم {ticket['ticket_id']}.\n"
+                f"الوصف: {ticket['issue_description']}\n"
+                f"الحالة: {ticket['status']}"
+            )
+            buttons = [
+                [InlineKeyboardButton("عرض التفاصيل", callback_data=f"da_view|{ticket['ticket_id']}")]
+            ]
+        else:
+            # When additional info is provided, this branch should not be used.
+            message = (
+                f"<b>طلب معلومات إضافية للتذكرة #{ticket['ticket_id']}</b>\n"
+                f"رقم الطلب: {ticket['order_id']}\n"
+                f"الوصف: {ticket['issue_description']}\n"
+                f"المعلومات المطلوبة: {client_solution}\n"
+                f"الحالة: {ticket['status']}"
+            )
+            buttons = [
+                [InlineKeyboardButton("تطبيق المعلومات", callback_data=f"da_moreinfo|{ticket['ticket_id']}")]
+            ]
         markup = InlineKeyboardMarkup(buttons)
         try:
-            if ticket['image_url']:
+            if ticket.get('image_url'):
                 da_bot.send_photo(chat_id=da_user["chat_id"], photo=ticket['image_url'],
                                   caption=message, reply_markup=markup, parse_mode="HTML")
             else:
