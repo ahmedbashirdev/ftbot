@@ -94,11 +94,22 @@ def notify_supervisors_da_moreinfo(ticket_id: int, additional_info: str):
     )
     keyboard = [[InlineKeyboardButton("عرض التفاصيل", callback_data=f"view|{ticket_id}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    for sup in db.get_supervisors():
+    
+    supervisors = db.get_supervisors()
+    logger.info("notify_supervisors_da_moreinfo: Found %d supervisor(s): %s", len(supervisors), supervisors)
+    if not supervisors:
+        logger.error("notify_supervisors_da_moreinfo: No supervisors found in DB.")
+        return
+    for sup in supervisors:
         try:
-            bot.send_message(chat_id=sup['chat_id'], text=text, reply_markup=reply_markup, parse_mode="HTML")
+            sup_chat = sup.get('chat_id')
+            if not sup_chat:
+                logger.error("notify_supervisors_da_moreinfo: Supervisor %s has no chat_id", sup)
+                continue
+            logger.info("Notifying supervisor %s for ticket %s", sup_chat, ticket_id)
+            bot.send_message(chat_id=sup_chat, text=text, reply_markup=reply_markup, parse_mode="HTML")
         except Exception as e:
-            logger.error("notify_supervisors_da_moreinfo: Error notifying supervisor %s: %s", sup['chat_id'], e)
+            logger.error("notify_supervisors_da_moreinfo: Error notifying supervisor %s: %s", sup.get('chat_id'), e)
 def notify_da(ticket):
     da_user = db.get_user(ticket["da_id"], "da")
     if da_user:

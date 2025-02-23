@@ -92,7 +92,10 @@ def init_db():
             )
         """))
         conn.commit()
-
+def get_all_tickets():
+    with get_connection() as conn:
+        result = conn.execute(text("SELECT * FROM tickets")).fetchall()
+    return [dict(row._mapping) for row in result] if result else []
 def get_subscription(user_id, bot):
     with get_connection() as conn:
         result = conn.execute(
@@ -211,16 +214,6 @@ def get_ticket(ticket_id):
     return dict(result._mapping) if result else None
 
 def update_ticket_status(ticket_id, new_status, log_entry=None):
-    """
-    Update the status of a ticket and optionally append a log entry.
-    Ensures the ticket_id is an integer.
-    """
-    try:
-        ticket_id = int(ticket_id)
-    except Exception as e:
-        logger.error("Invalid ticket_id provided: %s", ticket_id)
-        return False
-
     session = get_db_session()
     try:
         ticket = session.query(Ticket).filter(Ticket.ticket_id == ticket_id).first()
@@ -239,6 +232,8 @@ def update_ticket_status(ticket_id, new_status, log_entry=None):
             logs.append(log_entry)
             ticket.logs = json.dumps(logs)
         session.commit()
+        # Refresh ticket so that subsequent queries see updated data
+        session.refresh(ticket)
         return True
     except Exception as e:
         session.rollback()
@@ -246,7 +241,6 @@ def update_ticket_status(ticket_id, new_status, log_entry=None):
         return False
     finally:
         session.close()
-
 def get_tickets_by_client(user_id):
     """Retrieve all tickets for a given client using the user's subscription information."""
     with get_connection() as conn:
@@ -283,8 +277,19 @@ def search_tickets_by_order(order_id):
             {"order_id": f"%{order_id}%"}
         )
         tickets = result.fetchall()
-    return [dict(ticket) for ticket in tickets]
-
+    processed = []
+    for ticket in tickets:
+        try:
+            if hasattr(ticket, "_mapping"):
+                processed.append(dict(ticket._mapping))
+            elif isinstance(ticket, dict):
+                processed.append(ticket)
+            else:
+                processed.append(dict(ticket))
+        except Exception as e:
+            # Log the error and skip this ticket
+            logging.error("Error converting ticket %s: %s", ticket, e)
+    return processed
 def get_all_subscriptions():
     with get_connection() as conn:
         result = conn.execute(text("SELECT * FROM subscriptions")).fetchall()
