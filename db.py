@@ -105,7 +105,8 @@ def get_subscription(user_id, bot):
     if not result:
         return None
     return dict(result._mapping)
-
+def get_user(user_id, bot):
+    return get_subscription(user_id, bot)
 def update_ticket_details(ticket_id, new_description):
     """Update the issue_description field of a ticket."""
     session = get_db_session()

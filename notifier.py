@@ -1,3 +1,4 @@
+# notifier.py
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 import db
 import config
@@ -38,20 +39,16 @@ def notify_supervisors(ticket):
     for sup in supervisors:
         try:
             if ticket.get("image_url"):
-                bot.send_photo(
-                    chat_id=sup['chat_id'],
-                    photo=ticket.get("image_url"),
-                    caption=text,
-                    reply_markup=reply_markup,
-                    parse_mode="HTML"
-                )
+                supervisor_bot.send_photo(chat_id=sup['chat_id'],
+                                          photo=ticket.get("image_url"),
+                                          caption=text,
+                                          reply_markup=reply_markup,
+                                          parse_mode="HTML")
             else:
-                bot.send_message(
-                    chat_id=sup['chat_id'],
-                    text=text,
-                    reply_markup=reply_markup,
-                    parse_mode="HTML"
-                )
+                supervisor_bot.send_message(chat_id=sup['chat_id'],
+                                            text=text,
+                                            reply_markup=reply_markup,
+                                            parse_mode="HTML")
         except Exception as e:
             logger.error(f"Error notifying supervisor {sup['chat_id']}: {e}")
 
@@ -85,30 +82,25 @@ def notify_supervisors_da_moreinfo(ticket_id: int, additional_info: str):
     bot = Bot(token=config.SUPERVISOR_BOT_TOKEN)
     text = (
         f"<b>معلومات إضافية من الوكيل للتذكرة #{ticket_id}</b>\n"
-        f"رقم الطلب: {ticket['order_id']}\n"
-        f"الوصف: {ticket['issue_description']}\n"
-        f"المعلومات الإضافية: {additional_info}\n"
-        f"الحالة: {ticket['status']}"
+        f"🔹 رقم الطلب: {ticket['order_id']}\n"
+        f"🔹 الوصف: {ticket['issue_description']}\n"
+        f"🔹 المعلومات الإضافية: {additional_info}\n"
+        f"🔹 الحالة: {ticket['status']}"
     )
     keyboard = [[InlineKeyboardButton("عرض التفاصيل", callback_data=f"view|{ticket_id}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     supervisors = db.get_supervisors()
-    logger.info("notify_supervisors_da_moreinfo: Found %d supervisor(s): %s", len(supervisors), supervisors)
+    logger.info("notify_supervisors_da_moreinfo: Found %d supervisor(s).", len(supervisors))
     if not supervisors:
         logger.error("notify_supervisors_da_moreinfo: No supervisors found in DB.")
         return
     for sup in supervisors:
         try:
-            sup_chat = sup.get('chat_id')
-            if not sup_chat:
-                logger.error("notify_supervisors_da_moreinfo: Supervisor %s has no chat_id", sup)
-                continue
-            logger.info("Notifying supervisor %s for ticket %s", sup_chat, ticket_id)
-            bot.send_message(chat_id=sup_chat, text=text, reply_markup=reply_markup, parse_mode="HTML")
+            bot.send_message(chat_id=sup['chat_id'], text=text, reply_markup=reply_markup, parse_mode="HTML")
+            logger.info("Notified supervisor %s for ticket %s", sup['chat_id'], ticket_id)
         except Exception as e:
             logger.error("notify_supervisors_da_moreinfo: Error notifying supervisor %s: %s", sup.get('chat_id'), e)
-
 def notify_da_moreinfo(ticket_id: int, additional_info: str):
     ticket = db.get_ticket(ticket_id)
     if not ticket:
@@ -124,7 +116,8 @@ def notify_da_moreinfo(ticket_id: int, additional_info: str):
     )
     keyboard = [[InlineKeyboardButton("تطبيق المعلومات", callback_data=f"da_moreinfo|{ticket_id}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    da_user = db.get_user(ticket["da_id"], "da")
+    # Use get_user (which is a simple wrapper to get_subscription) with "DA"
+    da_user = db.get_user(ticket["da_id"], "DA")
     if not da_user:
         logger.error("notify_da_moreinfo: No DA subscription found for ticket %s", ticket_id)
         return
@@ -133,38 +126,42 @@ def notify_da_moreinfo(ticket_id: int, additional_info: str):
         logger.info(f"Ticket {ticket_id} additional info sent to DA (Chat ID: {da_user['chat_id']}).")
     except Exception as e:
         logger.error("notify_da_moreinfo: Error notifying DA: %s", e)
-
 def notify_da(ticket, client_solution=None, info_request=False):
-    da_user = db.get_user(ticket["da_id"], "da")
-    if da_user:
-        if not info_request:
-            message = (
-                f"تم تحديث بلاغك رقم {ticket['ticket_id']}.\n"
-                f"الوصف: {ticket['issue_description']}\n"
-                f"الحالة: {ticket['status']}"
-            )
-            buttons = [
-                [InlineKeyboardButton("عرض التفاصيل", callback_data=f"da_view|{ticket['ticket_id']}")]
-            ]
+    logger.debug("notify_da called with info_request=%s", info_request)
+    # Use db.get_user to retrieve the DA subscription.
+    da_user = db.get_user(ticket["da_id"], "DA")
+    if not da_user:
+        logger.error("notify_da: No DA subscription found for ticket %s", ticket['ticket_id'])
+        return
+    if info_request:
+        text = (
+            f"<b>طلب معلومات إضافية للتذكرة #{ticket['ticket_id']}</b>\n"
+            f"🔹 رقم الطلب: {ticket['order_id']}\n"
+            f"🔹 الوصف: {ticket['issue_description']}\n"
+            f"🔹 الحالة: {ticket['status']}\n"
+            f"🔹 المعلومات المطلوبة: {client_solution}"
+        )
+        buttons = [[InlineKeyboardButton("تطبيق المعلومات", callback_data=f"da_moreinfo|{ticket['ticket_id']}")]]
+    else:
+        text = (
+            f"<b>حل مشكلة التذكرة #{ticket['ticket_id']}</b>\n"
+            f"🔹 رقم الطلب: {ticket['order_id']}\n"
+            f"🔹 الوصف: {ticket['issue_description']}\n"
+            f"🔹 الحالة: {ticket['status']}\n\n"
+            f"🔹 الحل: {client_solution}"
+        )
+        buttons = [[InlineKeyboardButton("إغلاق التذكرة", callback_data=f"close|{ticket['ticket_id']}")]]
+    reply_markup = InlineKeyboardMarkup(buttons)
+    try:
+        da_sub = db.get_subscription(ticket["da_id"], "DA")
+        if da_sub:
+            chat_id = da_sub.get('chat_id')
+            if not chat_id:
+                logger.error(f"notify_da: No chat_id found for DA {ticket['da_id']}")
+                return
+            da_bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode="HTML")
+            logger.info(f"Ticket {ticket['ticket_id']} sent to DA (Chat ID: {chat_id}) with info_request={info_request}.")
         else:
-            # When additional info is provided, this branch should not be used.
-            message = (
-                f"<b>طلب معلومات إضافية للتذكرة #{ticket['ticket_id']}</b>\n"
-                f"رقم الطلب: {ticket['order_id']}\n"
-                f"الوصف: {ticket['issue_description']}\n"
-                f"المعلومات المطلوبة: {client_solution}\n"
-                f"الحالة: {ticket['status']}"
-            )
-            buttons = [
-                [InlineKeyboardButton("تطبيق المعلومات", callback_data=f"da_moreinfo|{ticket['ticket_id']}")]
-            ]
-        markup = InlineKeyboardMarkup(buttons)
-        try:
-            if ticket.get('image_url'):
-                da_bot.send_photo(chat_id=da_user["chat_id"], photo=ticket['image_url'],
-                                  caption=message, reply_markup=markup, parse_mode="HTML")
-            else:
-                da_bot.send_message(chat_id=da_user["chat_id"], text=message,
-                                    reply_markup=markup, parse_mode="HTML")
-        except Exception as e:
-            logger.error("Error notifying DA: %s", e)
+            logger.error(f"notify_da: No subscription found for DA {ticket['da_id']}")
+    except Exception as e:
+        logger.error("Error notifying DA: %s", e)

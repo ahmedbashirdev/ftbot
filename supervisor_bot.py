@@ -20,19 +20,20 @@ from telegram.ext import (
 )
 import db
 import config
-
+from notifier import notify_da_moreinfo, notify_da
 # Initialize logging and bot instances
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 da_bot = Bot(token=config.DA_BOT_TOKEN)
 
 # Conversation states
-(SUBSCRIPTION_PHONE, MAIN_MENU, SEARCH_TICKETS, AWAITING_RESPONSE, WAITING_FOR_ACTION, EDIT_DETAILS) = range(6)
+(SUBSCRIPTION_PHONE, MAIN_MENU, SEARCH_TICKETS, AWAITING_RESPONSE, EDIT_DETAILS) = range(5)
 
 def safe_edit_message(query, text, reply_markup=None, parse_mode="HTML"):
     """
-    Helper function to edit a message.
-    If the message is a photo (has a caption), edit its caption; otherwise, edit its text.
+    Helper function that edits a message.
+    If the message is a photo (has a caption),
+    uses edit_message_caption(), otherwise edit_message_text().
     """
     if hasattr(query.message, "caption") and query.message.caption:
         return query.edit_message_caption(caption=text, reply_markup=reply_markup, parse_mode=parse_mode)
@@ -143,7 +144,7 @@ def supervisor_main_menu_callback(update: Update, context: CallbackContext) -> i
         context.user_data['ticket_id'] = ticket_id
         context.user_data['action'] = 'moreinfo'
         context.bot.send_message(chat_id=query.message.chat.id,
-                                 text="أدخل المعلومات الإضافية المطلوبة:",
+                                 text="أدخل المعلومات الإضافية المطلوبة للتذكرة:",
                                  reply_markup=ForceReply(selective=True))
         return AWAITING_RESPONSE
 
@@ -169,7 +170,7 @@ def supervisor_main_menu_callback(update: Update, context: CallbackContext) -> i
             safe_edit_message(query, "رقم التذكرة غير صحيح.")
             return MAIN_MENU
         ticket = db.get_ticket(ticket_id)
-        send_to_client(ticket)  # Send with the ticket’s details (using its stored issue_description)
+        send_to_client(ticket)
         safe_edit_message(query, text=f"تم إرسال التذكرة #{ticket_id} إلى العميل.")
         return MAIN_MENU
 
@@ -211,7 +212,6 @@ def supervisor_main_menu_callback(update: Update, context: CallbackContext) -> i
         if not client_solution:
             client_solution = "لا يوجد حل من العميل."
         db.update_ticket_status(ticket_id, "Pending DA Action", {"action": "supervisor_forward", "message": client_solution})
-        # Use the modified notify_da function below
         notify_da(ticket, client_solution, info_request=False)
         safe_edit_message(query, text="تم إرسال الحالة إلى الوكيل.")
         return MAIN_MENU
@@ -221,10 +221,6 @@ def supervisor_main_menu_callback(update: Update, context: CallbackContext) -> i
         return MAIN_MENU
 
 def send_to_client(ticket, message_text=None):
-    """
-    Sends the ticket details to the client.
-    If message_text is provided, it replaces the issue description in the standard template.
-    """
     client_name = ticket.get('client')
     clients = db.get_clients_by_name(client_name)
     bot = Bot(token=config.CLIENT_BOT_TOKEN)
@@ -283,59 +279,22 @@ def awaiting_response_handler(update: Update, context: CallbackContext) -> int:
         return MAIN_MENU
     if action == 'solve':
         db.update_ticket_status(ticket_id, "Pending DA Action", {"action": "supervisor_solution", "message": response})
-        notify_da(ticket_id, response, info_request=False)
+        notify_da(db.get_ticket(ticket_id))
         update.message.reply_text("تم إرسال الحل إلى الوكيل.")
     elif action == 'moreinfo':
-        db.update_ticket_status(ticket_id, "Pending DA Response", {"action": "request_more_info", "message": response})
-        notify_da(ticket_id, response, info_request=True)
-        update.message.reply_text("تم إرسال الطلب إلى الوكيل.")
+        db.update_ticket_status(ticket_id, "Pending DA Response", {"action": "supervisor_moreinfo", "message": response})
+        from notifier import notify_da_moreinfo
+        notify_da_moreinfo(ticket_id, response)
+        update.message.reply_text("تم إرسال المعلومات الإضافية إلى الوكيل.")
     context.user_data.pop('ticket_id', None)
     context.user_data.pop('action', None)
     return MAIN_MENU
 
-# Modified notify_da: accepts either a ticket dict or a ticket_id (integer)
-def notify_da(ticket_or_id, client_solution=None, info_request=False):
-    # If a dictionary was provided, use it; otherwise, retrieve the ticket.
-    if isinstance(ticket_or_id, dict):
-        ticket = ticket_or_id
+def global_supervisor_text_handler(update: Update, context: CallbackContext) -> None:
+    if context.user_data.get('action') in ['solve', 'moreinfo'] and context.user_data.get('ticket_id'):
+        awaiting_response_handler(update, context)
     else:
-        ticket = db.get_ticket(ticket_or_id)
-    if not ticket:
-        logger.error("notify_da: Ticket not found.")
-        return
-    da_id = ticket.get('da_id')
-    if not da_id:
-        logger.error(f"notify_da: No DA assigned to ticket #{ticket['ticket_id']}")
-        return
-    bot = Bot(token=config.DA_BOT_TOKEN)
-    if info_request:
-        text = (f"<b>طلب معلومات إضافية للتذكرة #{ticket['ticket_id']}</b>\n"
-                f"رقم الطلب: {ticket['order_id']}\n"
-                f"الوصف: {ticket['issue_description']}\n"
-                f"الحالة: {ticket['status']}\n\n"
-                f"المعلومات المطلوبة: {client_solution}")
-        keyboard = [[InlineKeyboardButton("تطبيق المعلومات", callback_data=f"da_moreinfo|{ticket['ticket_id']}")]]
-    else:
-        text = (f"<b>حل مشكلة التذكرة #{ticket['ticket_id']}</b>\n"
-                f"رقم الطلب: {ticket['order_id']}\n"
-                f"الوصف: {ticket['issue_description']}\n"
-                f"الحالة: {ticket['status']}\n\n"
-                f"الحل: {client_solution}")
-        keyboard = [[InlineKeyboardButton("إغلاق التذكرة", callback_data=f"close|{ticket['ticket_id']}")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    try:
-        da_sub = db.get_subscription(ticket["da_id"], "DA")
-        if da_sub:
-            chat_id = da_sub.get('chat_id')
-            if not chat_id:
-                logger.error(f"notify_da: No chat_id found for DA {da_id}")
-                return
-            bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode="HTML")
-            logger.info(f"Ticket {ticket['ticket_id']} sent to DA (Chat ID: {chat_id}).")
-        else:
-            logger.error(f"notify_da: No subscription found for DA {da_id}")
-    except Exception as e:
-        logger.error("Error notifying DA: %s", e)
+        update.message.reply_text("الرجاء اختيار خيار من القائمة.")
 
 def supervisor_edit_details_handler(update: Update, context: CallbackContext) -> int:
     edited_text = update.message.text.strip()
@@ -343,17 +302,34 @@ def supervisor_edit_details_handler(update: Update, context: CallbackContext) ->
     if not ticket_id:
         update.message.reply_text("حدث خطأ. أعد المحاولة.")
         return MAIN_MENU
-    # Update the ticket's description in the database
     if not db.update_ticket_details(ticket_id, edited_text):
         update.message.reply_text("حدث خطأ أثناء تحديث تفاصيل التذكرة.")
         return MAIN_MENU
-    # Retrieve the updated ticket and send it to the client using a full template
     ticket = db.get_ticket(ticket_id)
     send_to_client(ticket, message_text=edited_text)
     update.message.reply_text("تم إرسال التذكرة إلى العميل مع التفاصيل المعدلة.")
     context.user_data.pop('ticket_id', None)
     context.user_data.pop('action', None)
     return MAIN_MENU
+
+def default_handler_supervisor(update: Update, context: CallbackContext) -> int:
+    keyboard = [
+        [InlineKeyboardButton("عرض الكل", callback_data="menu_show_all"),
+         InlineKeyboardButton("استعلام عن مشكلة", callback_data="menu_query_issue")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text("الرجاء اختيار خيار:", reply_markup=reply_markup)
+    return MAIN_MENU
+
+def error_handler(update: Update, context: CallbackContext):
+    logger.error('Update "%s" caused error "%s"', update, context.error)
+    if update and update.message:
+        update.message.reply_text("⚠️ حدث خطأ أثناء معالجة الطلب. الرجاء المحاولة مرة أخرى.")
+
+def cancel(update: Update, context: CallbackContext) -> int:
+    update.message.reply_text("تم إلغاء العملية.")
+    return ConversationHandler.END
+
 def global_supervisor_action_handler(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     query.answer()
@@ -369,11 +345,9 @@ def global_supervisor_action_handler(update: Update, context: CallbackContext) -
             return MAIN_MENU
         context.user_data['ticket_id'] = ticket_id
         context.user_data['action'] = 'solve'
-        context.bot.send_message(
-            chat_id=query.message.chat.id,
-            text="أدخل رسالة الحل للمشكلة:",
-            reply_markup=ForceReply(selective=True)
-        )
+        context.bot.send_message(chat_id=query.message.chat.id,
+                                 text="أدخل رسالة الحل للمشكلة:",
+                                 reply_markup=ForceReply(selective=True))
         return AWAITING_RESPONSE
     
     # Process more info action
@@ -385,11 +359,9 @@ def global_supervisor_action_handler(update: Update, context: CallbackContext) -
             return MAIN_MENU
         context.user_data['ticket_id'] = ticket_id
         context.user_data['action'] = 'moreinfo'
-        context.bot.send_message(
-            chat_id=query.message.chat.id,
-            text="أدخل المعلومات الإضافية المطلوبة للتذكرة:",
-            reply_markup=ForceReply(selective=True)
-        )
+        context.bot.send_message(chat_id=query.message.chat.id,
+                                 text="أدخل المعلومات الإضافية المطلوبة للتذكرة:",
+                                 reply_markup=ForceReply(selective=True))
         return AWAITING_RESPONSE
     
     # Process send to client action
@@ -406,7 +378,7 @@ def global_supervisor_action_handler(update: Update, context: CallbackContext) -
         else:
             safe_edit_message(query, text="التذكرة غير موجودة.")
         return MAIN_MENU
-
+    
     # Process send to DA action
     elif data.startswith("sendto_da|"):
         try:
@@ -434,46 +406,40 @@ def global_supervisor_action_handler(update: Update, context: CallbackContext) -
         else:
             safe_edit_message(query, text="التذكرة غير موجودة.")
         return MAIN_MENU
+    
+    else:
+        safe_edit_message(query, text="الإجراء غير معروف.")
+        return MAIN_MENU
 
-    return MAIN_MENU
-# In your main() function for the supervisor bot, add this handler:
 def global_supervisor_text_handler(update: Update, context: CallbackContext) -> None:
-    # Check if a "solve" action is pending
     if context.user_data.get('action') == 'solve' and context.user_data.get('ticket_id'):
         solution = update.message.text.strip()
         ticket_id = context.user_data['ticket_id']
-        # Update ticket status and add the supervisor's solution to the logs.
         success = db.update_ticket_status(ticket_id, "Pending DA Action", {"action": "supervisor_solution", "message": solution})
         if success:
-            # Notify the DA (using your notify_da function)
             ticket = db.get_ticket(ticket_id)
             notify_da(ticket)
             update.message.reply_text("تم إرسال الحل إلى الوكيل.")
         else:
             update.message.reply_text("حدث خطأ أثناء تحديث التذكرة.")
-        # Clear the stored action data
         context.user_data.pop('ticket_id', None)
         context.user_data.pop('action', None)
         return
-
-    # Check if a "moreinfo" action is pending
     elif context.user_data.get('action') == 'moreinfo' and context.user_data.get('ticket_id'):
         info = update.message.text.strip()
         ticket_id = context.user_data['ticket_id']
         success = db.update_ticket_status(ticket_id, "Awaiting DA Response", {"action": "supervisor_moreinfo", "message": info})
         if success:
-            ticket = db.get_ticket(ticket_id)
-            notify_da(ticket)
+            notify_da_moreinfo(ticket_id, info)
             update.message.reply_text("تم إرسال المعلومات الإضافية إلى الوكيل.")
         else:
             update.message.reply_text("حدث خطأ أثناء تحديث التذكرة.")
         context.user_data.pop('ticket_id', None)
         context.user_data.pop('action', None)
         return
-
     else:
-        # Fallback if no pending action: simply show the main menu.
         update.message.reply_text("الرجاء اختيار خيار من القائمة.")
+
 def default_handler_supervisor(update: Update, context: CallbackContext) -> int:
     keyboard = [
         [InlineKeyboardButton("عرض الكل", callback_data="menu_show_all"),
@@ -500,34 +466,18 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            SUBSCRIPTION_PHONE: [
-                MessageHandler(Filters.text & ~Filters.command, subscription_phone)
-            ],
-            WAITING_FOR_ACTION: [
-                CallbackQueryHandler(supervisor_main_menu_callback, pattern="^search_order\\|"),
-                CallbackQueryHandler(supervisor_main_menu_callback, pattern="^view_ticket\\|"),
-                CallbackQueryHandler(supervisor_main_menu_callback, pattern="^close_ticket\\|"),
-                CallbackQueryHandler(supervisor_main_menu_callback, pattern="^back_to_tickets")
-            ],
-            MAIN_MENU: [
-                CallbackQueryHandler(supervisor_main_menu_callback, 
-                                     pattern="^(menu_show_all|menu_query_issue|view\\|.*|solve\\|.*|moreinfo\\|.*|sendclient\\|.*|sendto_da\\|.*|confirm_sendclient\\|.*|cancel_sendclient\\|.*|edit_sendclient\\|.*|confirm_sendto_da\\|.*|cancel_sendto_da\\|.*)$")
-            ],
-            SEARCH_TICKETS: [
-                MessageHandler(Filters.text & ~Filters.command, search_tickets)
-            ],
-            AWAITING_RESPONSE: [
-                MessageHandler(Filters.text & ~Filters.command, awaiting_response_handler)
-            ],
-            EDIT_DETAILS: [
-                MessageHandler(Filters.text & ~Filters.command, supervisor_edit_details_handler)
-            ]
+            SUBSCRIPTION_PHONE: [MessageHandler(Filters.text & ~Filters.command, subscription_phone)],
+            MAIN_MENU: [CallbackQueryHandler(supervisor_main_menu_callback, 
+                                     pattern="^(menu_show_all|menu_query_issue|view\\|.*|solve\\|.*|moreinfo\\|.*|sendclient\\|.*|sendto_da\\|.*|confirm_sendclient\\|.*|cancel_sendclient\\|.*|edit_sendclient\\|.*|confirm_sendto_da\\|.*|cancel_sendto_da\\|.*)$")],
+            SEARCH_TICKETS: [MessageHandler(Filters.text & ~Filters.command, search_tickets)],
+            AWAITING_RESPONSE: [MessageHandler(Filters.text & ~Filters.command, awaiting_response_handler)],
+            EDIT_DETAILS: [MessageHandler(Filters.text & ~Filters.command, supervisor_edit_details_handler)]
         },
-        fallbacks=[CommandHandler("cancel", cancel)]
+        fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("تم إلغاء العملية."))]
     )
     dp.add_handler(conv_handler)
     dp.add_handler(CallbackQueryHandler(global_supervisor_action_handler, 
-    pattern="^(solve\\|.*|moreinfo\\|.*|sendclient\\|.*|sendto_da\\|.*)$"))
+        pattern="^(solve\\|.*|moreinfo\\|.*|sendclient\\|.*|sendto_da\\|.*)$"))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, global_supervisor_text_handler))
     dp.add_handler(MessageHandler(Filters.text, default_handler_supervisor))
     dp.add_handler(CallbackQueryHandler(supervisor_main_menu_callback, pattern="^sendclient\\|.*$"))
