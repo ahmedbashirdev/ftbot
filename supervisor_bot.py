@@ -220,11 +220,8 @@ def supervisor_main_menu_callback(update: Update, context: CallbackContext) -> i
 
     elif data.startswith("sendclient|"):
         ticket_id = int(data.split("|")[1])
-        keyboard = [
-            [InlineKeyboardButton("إرسال كما هي", callback_data=f"confirm_sendclient|{ticket_id}")],
-            [InlineKeyboardButton("تعديل التفاصيل", callback_data=f"edit_sendclient|{ticket_id}")],
-            [InlineKeyboardButton("إلغاء", callback_data=f"cancel_sendclient|{ticket_id}")]
-        ]
+        keyboard = [[InlineKeyboardButton("إرسال كما هي", callback_data=f"confirm_sendclient|{ticket_id}"),
+                     InlineKeyboardButton("تعديل التفاصيل", callback_data=f"edit_sendclient|{ticket_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         safe_edit_message(query,
                           text="هل تريد إرسال التذكرة إلى العميل كما هي أم تعديل التفاصيل؟",
@@ -279,8 +276,7 @@ def supervisor_main_menu_callback(update: Update, context: CallbackContext) -> i
                 client_solution = None
         if not client_solution:
             client_solution = "لا يوجد حل من العميل."
-        db.update_ticket_status(ticket_id, "Pending DA Action",
-                               {"action": "supervisor_forward", "message": client_solution})
+        db.update_ticket_status(ticket_id, "Pending DA Action", {"action": "supervisor_forward", "message": client_solution})
         notify_da(ticket, client_solution, info_request=False)
         safe_edit_message(query, text="تم إرسال الحالة إلى الوكيل.")
         return MAIN_MENU
@@ -309,7 +305,6 @@ def show_ticket_summary_for_edit_supervisor(query, context: CallbackContext) -> 
     ]
     rm = InlineKeyboardMarkup(kb)
     safe_edit_message(query, text=text, reply_markup=rm)
-    # *** IMPORTANT: Return EDIT_PROMPT state so the next callback is handled appropriately.
     return EDIT_PROMPT
 
 def supervisor_edit_prompt_callback(update: Update, context: CallbackContext) -> int:
@@ -700,31 +695,14 @@ def main():
                 pattern=r"^(menu_show_all|menu_query_issue|view\|.*|solve\|.*|moreinfo\|.*|sendclient\|.*|sendto_da\|.*|confirm_sendclient\|.*|cancel_sendclient\|.*|edit_sendclient\|.*)$"
             )],
             SEARCH_TICKETS: [MessageHandler(Filters.text & ~Filters.command, search_tickets)],
-            AWAITING_RESPONSE: [MessageHandler(Filters.text & ~Filters.command, awaiting_response_handler)],
-            EDIT_PROMPT: [CallbackQueryHandler(
-                supervisor_edit_prompt_callback,
-                pattern=r"^(sup_edit_ticket_yes|sup_edit_ticket_no)$"
-            )],
-            EDIT_FIELD: [
-                CallbackQueryHandler(
-                    supervisor_edit_field_callback,
-                    pattern=r"^(sup_edit_field_.*|sup_edit_done|sup_reason_.*|sup_type_.*)$"
-                ),
-                MessageHandler(Filters.text & ~Filters.command, supervisor_edit_field_input_handler)
-            ],
-            EDIT_IMAGE: [
-                MessageHandler(Filters.photo, supervisor_edit_image_handler),
-                MessageHandler(Filters.text, supervisor_edit_image_handler)
-            ],
-            EDIT_REASON: [CallbackQueryHandler(supervisor_edit_reason_callback, pattern=r"^sup_reason_.*")],
-            EDIT_TYPE: [CallbackQueryHandler(supervisor_edit_type_callback, pattern=r"^sup_type_.*")]
+            AWAITING_RESPONSE: [MessageHandler(Filters.text & ~Filters.command, awaiting_response_handler)]
         },
-        fallbacks=[CommandHandler("cancel", cancel)]
+        fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("تم إلغاء العملية."))]
     )
     dp.add_handler(conv_handler)
     dp.add_handler(CallbackQueryHandler(global_supervisor_action_handler, pattern=r"^(solve\|.*|moreinfo\|.*|sendclient\|.*|sendto_da\|.*)$"))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, global_supervisor_text_handler))
-    dp.add_handler(MessageHandler(Filters.text, default_handler_supervisor))
+    # Removed the extra MessageHandler(Filters.text, default_handler_supervisor) to avoid duplicate main menu messages.
 
     # -------------------------
     # Global /start handler (group -1)
